@@ -94,7 +94,7 @@
 // then press the boot button in less than 2 seconds, and hold it for 5 seconds.
 #define FAKE_BATTERY_VOLTAGE
 #elif defined(BOARD_SEEED_XIAO_ESP32S3)
-#define DEVICE_MODEL  "seeed_esp32s3"
+#define DEVICE_MODEL  "xiao_ep1085"
 #define PIN_INTERRUPT 0 // the boot button on the XIAO ESP32-S3, this button works as regular wakeup button
 #define FAKE_BATTERY_VOLTAGE
 #endif
@@ -166,6 +166,7 @@ typedef struct tag_trmnl_device {
   uint8_t batt_en_pin;
   uint8_t batt_type; // ADC, BQ27xx
   uint8_t panel_set;
+  uint8_t epd_cs2_pin; // optional second chip select for dual-controller EPDs
 } TRMNL_DEVICE;
 #endif // PARALLEL_EPD
 
@@ -179,6 +180,7 @@ enum {
   EPD_75_4CLR,
   EPD_75_6CLR,
   EPD_CROWPANEL,
+  EPD_1085,
   EPD_583,
   EPD_PAPER_MONO,
   EPD_PAPER_COLOR,
