@@ -18,3 +18,7 @@ src/logo_medium.h
 src/logo_small.h
 src/wifi_connect_qr.h
 src/wifi_failed_qr.h
+
+# Vendored display library and its documentation snapshot, including generated font data.
+docs/bb_epaper/**
+lib/bb_epaper_ep1085/**
