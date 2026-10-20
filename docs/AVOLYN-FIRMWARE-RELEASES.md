@@ -4,7 +4,7 @@ This Avolyn-only workflow is separate from upstream TRMNL S3 publishing and does
 
 ## Safety model
 
-- Ordinary commits and pull requests run **package unit tests only**.
+- Pull requests run **package unit tests plus a real PlatformIO build and package verification**, but never publish a release or flash hardware.
 - After changes are reviewed and merged, a maintainer can manually run **Actions → Avolyn firmware release candidate → Run workflow** with an exact version matching `src/avolyn_headless.cpp`.
 - The workflow compiles `avolyn_headless`, packages actual ESP32-S3 bootloader, partition table, app and matching `boot_app0.bin` when OTA is present, and uploads a short-lived Actions artifact.
 - Optional release creation is **draft only**, **prerelease**, and requires an explicit manual choice. No code push or workflow automatically publishes stable firmware or flashes boards.
