@@ -12,6 +12,7 @@
 #include <WiFi.h>
 #include <Preferences.h>
 #include <ArduinoJson.h>
+#include <WebServer.h>
 
 namespace {
 constexpr char FIRMWARE_VERSION[] = "0.1.0-dev";
@@ -19,6 +20,8 @@ constexpr unsigned long WIFI_TIMEOUT_MS = 20000;
 constexpr size_t SERIAL_LINE_MAX = 1024;
 
 Preferences wifiPrefs;
+WebServer lanServer(8080);
+bool lanServerStarted = false;
 char serialLine[SERIAL_LINE_MAX + 1] = {};
 size_t serialLength = 0;
 bool discardOversizedLine = false;
@@ -70,6 +73,21 @@ void sendFirmwareStatus() {
     result["wifiConnected"] = (WiFi.status() == WL_CONNECTED);
     result["macAddress"] = WiFi.macAddress();
     sendJson(result);
+}
+
+// Read-only LAN availability probe. Not a pairing or image-transfer endpoint.
+void handleLanStatus() {
+    JsonDocument response;
+    response["product"] = "avolyn-slate";
+    response["board"] = "xiao-esp32s3";
+    response["firmwareVersion"] = FIRMWARE_VERSION;
+    response["macAddress"] = WiFi.macAddress();
+    response["wifiConnected"] = (WiFi.status() == WL_CONNECTED);
+    response["paired"] = false;
+    String body;
+    serializeJson(response, body);
+    lanServer.sendHeader("Cache-Control", "no-store");
+    lanServer.send(200, "application/json", body);
 }
 
 void scanWifi() {
@@ -192,6 +210,7 @@ void updateWifi() {
     if (!wifiConnecting) return;
     if (WiFi.status() == WL_CONNECTED) {
         wifiConnecting = false;
+        if (!lanServerStarted) { lanServer.begin(); lanServerStarted = true; }
         if (saveAfterConnection) {
             // Store only after successful association. Arduino Preferences uses NVS;
             // production builds should also enable appropriate flash encryption.
@@ -219,6 +238,7 @@ void setup() {
     WiFi.setSleep(false);
     wifiPrefs.begin("avolyn_wifi", false);
 
+    lanServer.on("/status", HTTP_GET, handleLanStatus);
     Serial.println("AVOLYN_SLATE_HEADLESS_READY");
     const String savedSsid = wifiPrefs.getString("ssid", "");
     if (!savedSsid.isEmpty()) {
@@ -229,6 +249,10 @@ void setup() {
 void loop() {
     processUsb();
     updateWifi();
+    if (WiFi.status() == WL_CONNECTED) {
+        if (!lanServerStarted) { lanServer.begin(); lanServerStarted = true; }
+        lanServer.handleClient();
+    }
     delay(2);
 }
 
