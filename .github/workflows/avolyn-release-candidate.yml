@@ -1,6 +1,6 @@
 name: Avolyn firmware release candidate
 
-# Ordinary pushes and PRs only run package tests. A human must manually
+# Ordinary PRs validate package creation without publication. A human must manually
 # request a build, and publishing always creates a DRAFT release.
 on:
   pull_request:
@@ -36,7 +36,6 @@ jobs:
         run: python -m unittest discover -s scripts -p 'test_avolyn_release_package.py' -v
 
   build-candidate:
-    if: github.event_name == 'workflow_dispatch'
     needs: package-tests
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -63,6 +62,9 @@ jobs:
         run: |
           set -euo pipefail
           BOOT_DATA="$HOME/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin"
+          if [ -z "$AVOLYN_VERSION" ]; then
+            AVOLYN_VERSION="$(python -c 'import re; from pathlib import Path; s=Path("src/avolyn_headless.cpp").read_text(); m=re.search(r\x27FIRMWARE_VERSION\\[\\]\\s*=\\s*"([^"]+)"\x27, s); assert m, "Firmware version missing"; print(m.group(1))')"
+          fi
           OUT="Avolyn-Slate-${AVOLYN_VERSION}.avolyn-firmware"
           test -f "$BOOT_DATA" || { echo "::error::Matching boot_app0.bin not found"; exit 1; }
           mkdir -p out
@@ -81,7 +83,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Create draft only if manually requested
-        if: env.DRAFT_REQUESTED == 'true'
+        if: github.event_name == 'workflow_dispatch' && env.DRAFT_REQUESTED == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
