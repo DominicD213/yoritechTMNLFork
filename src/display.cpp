@@ -64,6 +64,7 @@ const TRMNL_DEVICE device_list[] =
   "reterminal_e1002", 7, 9,     10,  12,   11,  13,   0xff, 0xff, 3,     1,    21,      BATT_ADC,  EPD_75_6CLR, 0xff,
   "crowpanel42",   0,    0,     0,   0,    0,   0,    0xff, 0xff, 2,     0xff, 0xff,    BATT_NONE, EPD_CROWPANEL, 0xff,
   "xiao_ep1085",   7,    9,     2,   1,    4,   3,    0xff, 0xff, 0,     0xff, 0xff,    BATT_ADC,  EPD_1085, 5,
+  "xiao_slate_579", 7, 9, 2, 1, 4, 3, 0xff, 0xff, 0xff, 0xff, 0xff, BATT_NONE, EPD_75, 0xff,
 #ifdef CMD_CS1_CS2
   "m5_paper_mono", 0,    0,     0,   0,    0,   0,    47,   48,   2,     0xff, 0xff,    BATT_NONE, EPD_PAPER_MONO, 0xff,
   "m5_paper_color", 0,   0,     0,   0,    0,   0,    3,    2,    1,     0xff, 0xff,    BATT_NONE, EPD_PAPER_COLOR, 0xff,
@@ -262,6 +263,20 @@ void hw_config_init(void)
  */
 void display_init(void)
 {
+#if defined(AVOLYN_HEADLESS_WIFI_TEST) && AVOLYN_HEADLESS_WIFI_TEST
+    if (pDevice == NULL) {
+        hw_config_init();
+    }
+
+    iTempProfile = preferences.getUInt(
+        PREFERENCES_TEMP_PROFILE,
+        TEMP_PROFILE_DEFAULT
+    );
+
+    Log_info("Avolyn Slate: Headless Wi-Fi test mode");
+    Log_info("Skipping physical e-ink display initialization");
+    return;
+#endif
     if (pDevice == NULL) {
         hw_config_init();
     }
