@@ -1,0 +1,100 @@
+name: Avolyn firmware release candidate
+
+# Ordinary pushes and PRs only run package tests. A human must manually
+# request a build, and publishing always creates a DRAFT release.
+on:
+  pull_request:
+    paths:
+      - 'scripts/avolyn_package_release.py'
+      - 'scripts/test_avolyn_release_package.py'
+      - '.github/workflows/avolyn-release-candidate.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact FIRMWARE_VERSION built by this ref (e.g. 0.2.0-dev)
+        type: string
+        required: true
+      create_draft_release:
+        description: Create a private-to-maintainers DRAFT GitHub Release after building (never publishes automatically)
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  package-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Test factory image packaging and OTA guards
+        run: python -m unittest discover -s scripts -p 'test_avolyn_release_package.py' -v
+
+  build-candidate:
+    if: github.event_name == 'workflow_dispatch'
+    needs: package-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      AVOLYN_VERSION: ${{ inputs.version }}
+      DRAFT_REQUESTED: ${{ inputs.create_draft_release }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio/.cache
+          key: avolyn-release-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+      - name: Install PlatformIO
+        run: python -m pip install platformio==6.1.19
+      - name: Compile real XIAO ESP32-S3 headless firmware
+        run: pio run -e avolyn_headless -j 4
+      - name: Build checked factory package and GitHub manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          BOOT_DATA="$HOME/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin"
+          OUT="Avolyn-Slate-${AVOLYN_VERSION}.avolyn-firmware"
+          test -f "$BOOT_DATA" || { echo "::error::Matching boot_app0.bin not found"; exit 1; }
+          mkdir -p out
+          python scripts/avolyn_package_release.py \
+            --build .pio/build/avolyn_headless \
+            --source src/avolyn_headless.cpp \
+            --version "$AVOLYN_VERSION" \
+            --boot-app0 "$BOOT_DATA" \
+            --output "out/$OUT"
+          sha256sum "out/$OUT" > "out/$OUT.sha256"
+      - name: Retain package, release manifest and checksum for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: avolyn-slate-firmware-candidate
+          path: out/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Create draft only if manually requested
+        if: env.DRAFT_REQUESTED == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="avolyn-fw-${AVOLYN_VERSION}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists; refusing to overwrite it."
+            exit 1
+          fi
+          gh release create "$TAG" out/*.avolyn-firmware out/*.avolyn-firmware.release.json \
+            --target "$GITHUB_SHA" \
+            --title "Avolyn Slate firmware ${AVOLYN_VERSION} — candidate" \
+            --notes "Headless XIAO ESP32-S3 development candidate. Validate secure pairing, USB, Wi-Fi and flash recovery on hardware before publication. Factory flash can reset credentials." \
+            --draft --prerelease
+          echo "Draft release created. It is NOT visible to the public Avolyn updater until you deliberately publish a stable release." >> "$GITHUB_STEP_SUMMARY"
