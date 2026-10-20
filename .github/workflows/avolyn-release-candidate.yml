@@ -40,7 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: write
+      contents: read
     env:
       AVOLYN_VERSION: ${{ inputs.version }}
       DRAFT_REQUESTED: ${{ inputs.create_draft_release }}
@@ -82,11 +82,25 @@ jobs:
           path: out/*
           if-no-files-found: error
           retention-days: 30
-      - name: Create draft only if manually requested
-        if: github.event_name == 'workflow_dispatch' && env.DRAFT_REQUESTED == 'true'
+  publish-draft:
+    if: github.event_name == 'workflow_dispatch' && inputs.create_draft_release == true
+    needs: build-candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      AVOLYN_VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Download already validated firmware release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: avolyn-slate-firmware-candidate
+          path: out
+      - name: Create draft prerelease (requires maintainer approval to publish)
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           TAG="avolyn-fw-${AVOLYN_VERSION}"
