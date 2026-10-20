@@ -1,0 +1,24 @@
+{
+  "description": "Public deterministic test credentials ONLY. Never use on a device.",
+  "keyId": "000102030405060708090a0b0c0d0e0f",
+  "secret": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "challenge": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+  "requestKey": "61c0d66b5b72eb3e173127209c6b215149373c101c1f21075c347d700c91effc",
+  "responseKey": "a48e54e4bda9d4a6f04cf30735b64b3d3ca9af46e2373979de3b392e547de575",
+  "requestPlain": "{\"op\":\"status\",\"challenge\":\"404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f\"}",
+  "request": {
+    "v": 1,
+    "keyId": "000102030405060708090a0b0c0d0e0f",
+    "iv": "101112131415161718191a1b",
+    "ciphertext": "93ab025f3bf097c744aba3e1fbadd9d3cc663832bbedfe54479d99cc335d69c016254f2675adc0d1d5ebf5297f43bce8fbd459280739ef058c57e6d1c04e459158328df3183ba3c14ef657e11d1f5e64e24eba162eb2c0203ce7d18b4e8d",
+    "tag": "3670f1e11357143c2d8ad18b60b18525"
+  },
+  "responsePlain": "{\"product\":\"avolyn-slate\",\"board\":\"xiao-esp32s3\",\"macAddress\":\"aa:bb:cc:dd:ee:ff\",\"firmwareVersion\":\"0.2.0-dev\",\"wifiConnected\":true,\"paired\":true}",
+  "response": {
+    "v": 1,
+    "keyId": "000102030405060708090a0b0c0d0e0f",
+    "iv": "202122232425262728292a2b",
+    "ciphertext": "dd2d9d4ccecb0a1c452736cd57c1c96d056e7bc7e7e9edb5f8308adee8f28ea796501cff1db8380b6fb5d50a902ef9c7f54e5030c2865cbf6c859377da3566b30d6b8094759da84ecdea7bbb04a9529e33cb9b5835407286e919804cb1ea8cb7a658a2067246b20fa29916df141b61e315f92f79692d457fc82044b1737ccaa886290baa90bc18136373b2641fac6f6fce27c4",
+    "tag": "bf169dda439314ece2ab9748411ab1ce"
+  }
+}
