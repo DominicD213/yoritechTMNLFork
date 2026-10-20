@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <cstring>
 #include <mbedtls/gcm.h>
-#include <mbedtls/hkdf.h>
 #include <mbedtls/md.h>
 
 namespace avolyn {
@@ -38,11 +37,19 @@ namespace avolyn {
   inline bool deriveKey(const char *secret, const char *keyId, bool response, uint8_t *key) {
     uint8_t master[32];
     if (!isHex(keyId, 16) || !fromHex(secret, master, 32)) return false;
+    // RFC 5869 HKDF-SHA256, one 32-byte output block. Arduino ESP32's
+    // prebuilt Mbed TLS omits mbedtls_hkdf, but includes the HMAC primitive.
     const char *info = response ? "avolyn-pair-v1/response" : "avolyn-pair-v1/request";
-    int result =
-      mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), reinterpret_cast<const uint8_t *>(keyId), 32, master,
-                   sizeof(master), reinterpret_cast<const uint8_t *>(info), std::strlen(info), key, 32);
+    const auto *md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    uint8_t prk[32], expand[64] = {};
+    const size_t infoLength = std::strlen(info);
+    std::memcpy(expand, info, infoLength);
+    expand[infoLength] = 1;
+    int result = mbedtls_md_hmac(md, reinterpret_cast<const uint8_t *>(keyId), 32, master, sizeof(master), prk);
+    if (result == 0) result = mbedtls_md_hmac(md, prk, sizeof(prk), expand, infoLength + 1, key);
     wipe(master, sizeof(master));
+    wipe(prk, sizeof(prk));
+    wipe(expand, sizeof(expand));
     return result == 0;
   }
   inline bool decrypt(const uint8_t *key, const char *ivHex, const char *tagHex, const char *cipherHex, const char *aad,
