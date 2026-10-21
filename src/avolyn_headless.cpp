@@ -426,12 +426,13 @@ namespace {
       pendingSsid = "";
       sendWifiStatus();
     } else if (millis() - connectionStart >= WIFI_TIMEOUT_MS) {
+      const bool manualRequest = saveAfterConnection;
       wifiConnecting = false;
       saveAfterConnection = false;
       pendingPassword = "";
       pendingSsid = "";
       WiFi.disconnect(false, false);
-      if (saveAfterConnection) sendError("Wi-Fi connection timed out. Check network/password.");
+      if (manualRequest) sendError("Wi-Fi connection timed out. Check network/password.");
     }
   }
 } // namespace
