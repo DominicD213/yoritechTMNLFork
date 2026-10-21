@@ -14,17 +14,18 @@ source = r'''
 #include <iostream>
 int main() {
   using avolyn::shouldRetrySavedWifi;
-  assert(!shouldRetrySavedWifi(false, false, false, 50000, 0)); // No saved credentials.
-  assert(!shouldRetrySavedWifi(false, true, true, 50000, 0)); // An attempt is in progress.
-  assert(!shouldRetrySavedWifi(true, false, true, 50000, 0)); // Already joined.
-  assert(!shouldRetrySavedWifi(false, false, true, 34999, 0)); // Backoff not finished.
-  assert(shouldRetrySavedWifi(false, false, true, 35000, 0));
-  assert(!shouldRetrySavedWifi(false, false, true, 55000, 25000));
-  assert(shouldRetrySavedWifi(false, false, true, 60000, 25000));
-  // millis() wraps after long-running device uptime.
+  constexpr uint32_t delay = 35000U;
+  assert(!shouldRetrySavedWifi(false, false, false, 50000, delay)); // No saved credentials.
+  assert(!shouldRetrySavedWifi(false, true, true, 50000, delay)); // Attempt in progress.
+  assert(!shouldRetrySavedWifi(true, false, true, 50000, delay)); // Already joined.
+  assert(!shouldRetrySavedWifi(false, false, true, 34999, delay)); // Backoff not finished.
+  assert(shouldRetrySavedWifi(false, false, true, 35000, delay));
+  assert(!shouldRetrySavedWifi(false, false, true, 55000U - 25000U, delay));
+  assert(shouldRetrySavedWifi(false, false, true, 60000U - 25000U, delay));
+  // ESP32 millis() wraps, but elapsed subtraction remains correct using uint32_t.
   const uint32_t previous = UINT32_MAX - 1000;
-  assert(!shouldRetrySavedWifi(false, false, true, 32998, previous));
-  assert(shouldRetrySavedWifi(false, false, true, 33999, previous));
+  assert(!shouldRetrySavedWifi(false, false, true, uint32_t(32998U - previous), delay));
+  assert(shouldRetrySavedWifi(false, false, true, uint32_t(33999U - previous), delay));
   std::cout << "Saved Wi-Fi retry scheduling and timer wrap tests passed.\n";
 }
 '''
