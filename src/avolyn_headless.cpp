@@ -12,7 +12,7 @@
 #include "avolyn_wifi_reconnect.h"
 
 namespace {
-  constexpr char FIRMWARE_VERSION[] = "0.2.1-dev";
+  constexpr char FIRMWARE_VERSION[] = "0.2.2-dev";
   constexpr unsigned long WIFI_TIMEOUT_MS = 20000;
   constexpr unsigned long WIFI_RETRY_BACKOFF_MS = 15000;
   constexpr unsigned long WIFI_RETRY_AFTER_MS = WIFI_TIMEOUT_MS + WIFI_RETRY_BACKOFF_MS;
@@ -41,6 +41,7 @@ namespace {
   bool wifiConnecting = false;
   bool saveAfterConnection = false;
   bool savedWifiConfigured = false;
+  uint8_t savedWifiAttempts = 0; // Count the initial boot connection and each automatic retry.
   unsigned long connectionStart = 0;
   String pendingSsid;
   String pendingPassword;
@@ -71,6 +72,10 @@ namespace {
     result["ssid"] = (WiFi.status() == WL_CONNECTED) ? WiFi.SSID() : "";
     result["ip"] = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "";
     result["macAddress"] = WiFi.macAddress();
+    result["autoAttempts"] = savedWifiAttempts;
+    result["maxAutoAttempts"] = avolyn::MAX_SAVED_WIFI_ATTEMPTS;
+    result["retryExhausted"] = savedWifiConfigured && WiFi.status() != WL_CONNECTED &&
+                               !wifiConnecting && savedWifiAttempts >= avolyn::MAX_SAVED_WIFI_ATTEMPTS;
     sendJson(result);
   }
 
@@ -278,11 +283,18 @@ namespace {
     WiFi.scanDelete();
   }
 
-  void connectWifi(const String &ssid, const String &password, bool rememberAfterSuccess, bool announce = true) {
+  void connectWifi(const String &ssid, const String &password, bool rememberAfterSuccess, bool announce = true,
+                   bool automatic = false) {
     if (ssid.isEmpty() || ssid.length() > 32 || password.length() > 63 ||
         (!password.isEmpty() && password.length() < 8)) {
       if (announce) sendError("Invalid Wi-Fi name or password length.");
       return;
+    }
+    if (automatic) {
+      if (savedWifiAttempts >= avolyn::MAX_SAVED_WIFI_ATTEMPTS) return;
+      ++savedWifiAttempts;
+    } else {
+      savedWifiAttempts = 0; // Explicit USB setup is always allowed after automatic attempts are exhausted.
     }
     pendingSsid = ssid;
     pendingPassword = password;
@@ -340,6 +352,7 @@ namespace {
       wifiPrefs.remove("ssid");
       wifiPrefs.remove("pass");
       savedWifiConfigured = false;
+      savedWifiAttempts = 0;
       saveAfterConnection = false;
       pendingPassword = "";
       pendingSsid = "";
@@ -385,11 +398,12 @@ namespace {
     if (!wifiConnecting) {
       const bool online = WiFi.status() == WL_CONNECTED;
       const unsigned long elapsed = millis() - connectionStart;
-      if (avolyn::shouldRetrySavedWifi(online, false, savedWifiConfigured, elapsed, WIFI_RETRY_AFTER_MS)) {
+      if (avolyn::shouldRetrySavedWifi(online, false, savedWifiConfigured, elapsed, WIFI_RETRY_AFTER_MS,
+                                       savedWifiAttempts)) {
         // Do not read NVS every loop or resend credentials until the backoff expires.
         const String savedSsid = wifiPrefs.getString("ssid", "");
         if (!savedSsid.isEmpty()) {
-          connectWifi(savedSsid, wifiPrefs.getString("pass", ""), false, false);
+          connectWifi(savedSsid, wifiPrefs.getString("pass", ""), false, false, true);
         } else {
           savedWifiConfigured = false;
         }
@@ -398,6 +412,7 @@ namespace {
     }
     if (WiFi.status() == WL_CONNECTED) {
       wifiConnecting = false;
+      savedWifiAttempts = 0; // A new connection episode gets a fresh three-attempt budget.
       startLanServer();
       if (saveAfterConnection) {
             // Store only after successful association. Arduino Preferences uses NVS;
@@ -415,7 +430,8 @@ namespace {
       saveAfterConnection = false;
       pendingPassword = "";
       pendingSsid = "";
-      sendError("Wi-Fi connection timed out. Check network/password.");
+      WiFi.disconnect(false, false);
+      if (saveAfterConnection) sendError("Wi-Fi connection timed out. Check network/password.");
     }
   }
 } // namespace
@@ -423,7 +439,8 @@ namespace {
 void setup() {
   Serial.begin(115200);
   WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
+  // The firmware owns retries and limits them; do not allow Arduino to retry indefinitely.
+  WiFi.setAutoReconnect(false);
   WiFi.setSleep(false);
   wifiPrefs.begin("avolyn_wifi", false);
 
@@ -441,7 +458,7 @@ void setup() {
   savedWifiConfigured = !savedSsid.isEmpty();
   if (savedWifiConfigured) {
     // Reconnect after real power loss; no USB command or unsolicited WIFI_SET ACK.
-    connectWifi(savedSsid, wifiPrefs.getString("pass", ""), false, false);
+    connectWifi(savedSsid, wifiPrefs.getString("pass", ""), false, false, true);
   }
 }
 
