@@ -9,10 +9,12 @@
 #include <esp_system.h>
 
 #include "avolyn_pairing_crypto.h"
+#include "avolyn_wifi_reconnect.h"
 
 namespace {
   constexpr char FIRMWARE_VERSION[] = "0.2.0-dev";
   constexpr unsigned long WIFI_TIMEOUT_MS = 20000;
+  constexpr unsigned long WIFI_RETRY_BACKOFF_MS = 15000;
   constexpr size_t SERIAL_LINE_MAX = 1024;
 
   Preferences wifiPrefs;
@@ -37,6 +39,7 @@ namespace {
 
   bool wifiConnecting = false;
   bool saveAfterConnection = false;
+  bool savedWifiConfigured = false;
   unsigned long connectionStart = 0;
   String pendingSsid;
   String pendingPassword;
@@ -274,10 +277,10 @@ namespace {
     WiFi.scanDelete();
   }
 
-  void connectWifi(const String &ssid, const String &password, bool rememberAfterSuccess) {
+  void connectWifi(const String &ssid, const String &password, bool rememberAfterSuccess, bool announce = true) {
     if (ssid.isEmpty() || ssid.length() > 32 || password.length() > 63 ||
         (!password.isEmpty() && password.length() < 8)) {
-      sendError("Invalid Wi-Fi name or password length.");
+      if (announce) sendError("Invalid Wi-Fi name or password length.");
       return;
     }
     pendingSsid = ssid;
@@ -288,11 +291,13 @@ namespace {
     WiFi.disconnect(false, false);
     WiFi.begin(pendingSsid.c_str(), pendingPassword.c_str());
 
-    JsonDocument result;
-    result["type"] = "WIFI_SET";
-    result["accepted"] = true;
-    result["state"] = "connecting";
-    sendJson(result);
+    if (announce) {
+      JsonDocument result;
+      result["type"] = "WIFI_SET";
+      result["accepted"] = true;
+      result["state"] = "connecting";
+      sendJson(result);
+    }
   }
 
   void handleLine(const char *line) {
@@ -333,6 +338,7 @@ namespace {
     } else if (strcmp(name, "WIFI_FORGET") == 0) {
       wifiPrefs.remove("ssid");
       wifiPrefs.remove("pass");
+      savedWifiConfigured = false;
       saveAfterConnection = false;
       pendingPassword = "";
       pendingSsid = "";
@@ -375,7 +381,19 @@ namespace {
   }
 
   void updateWifi() {
-    if (!wifiConnecting) return;
+    if (!wifiConnecting) {
+      if (avolyn::shouldRetrySavedWifi(WiFi.status() == WL_CONNECTED, false, savedWifiConfigured, millis(),
+                                      connectionStart, WIFI_TIMEOUT_MS, WIFI_RETRY_BACKOFF_MS)) {
+        // Do not read NVS every loop or resend credentials until the backoff expires.
+        const String savedSsid = wifiPrefs.getString("ssid", "");
+        if (!savedSsid.isEmpty()) {
+          connectWifi(savedSsid, wifiPrefs.getString("pass", ""), false, false);
+        } else {
+          savedWifiConfigured = false;
+        }
+      }
+      return;
+    }
     if (WiFi.status() == WL_CONNECTED) {
       wifiConnecting = false;
       startLanServer();
@@ -384,6 +402,7 @@ namespace {
             // production builds should also enable appropriate flash encryption.
         wifiPrefs.putString("ssid", pendingSsid);
         wifiPrefs.putString("pass", pendingPassword);
+        savedWifiConfigured = true;
       }
       saveAfterConnection = false;
       pendingPassword = "";
@@ -417,8 +436,10 @@ void setup() {
   }
   Serial.println("AVOLYN_SLATE_HEADLESS_READY");
   const String savedSsid = wifiPrefs.getString("ssid", "");
-  if (!savedSsid.isEmpty()) {
-    connectWifi(savedSsid, wifiPrefs.getString("pass", ""), false);
+  savedWifiConfigured = !savedSsid.isEmpty();
+  if (savedWifiConfigured) {
+    // Reconnect after real power loss; no USB command or unsolicited WIFI_SET ACK.
+    connectWifi(savedSsid, wifiPrefs.getString("pass", ""), false, false);
   }
 }
 
