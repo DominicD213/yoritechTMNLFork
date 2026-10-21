@@ -227,6 +227,9 @@ namespace {
       status["firmwareVersion"] = FIRMWARE_VERSION;
       status["macAddress"] = WiFi.macAddress();
       status["wifiConnected"] = (WiFi.status() == WL_CONNECTED);
+      status["wifiJoinTimeKnown"] = hasJoinDuration;
+      status["wifiJoinDurationMs"] = hasJoinDuration ? lastJoinDurationMs : 0;
+      status["wifiSignalDbm"] = WiFi.RSSI();
       status["paired"] = true;
       String plainStatus;
       serializeJson(status, plainStatus);
