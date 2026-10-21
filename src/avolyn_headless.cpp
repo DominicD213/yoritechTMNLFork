@@ -15,6 +15,7 @@ namespace {
   constexpr char FIRMWARE_VERSION[] = "0.2.3-dev";
   constexpr unsigned long WIFI_TIMEOUT_MS = 15000;
   constexpr unsigned long WIFI_POLL_MS = 250; // 4 inexpensive status checks/sec instead of ~500/sec.
+  constexpr unsigned long LAN_RETRY_MS = 5000;
   constexpr size_t SERIAL_LINE_MAX = 1024;
 
   Preferences wifiPrefs;
@@ -44,6 +45,7 @@ namespace {
   unsigned long connectionStart = 0;
   unsigned long lastWifiFailureAt = 0;
   unsigned long lastWifiPoll = 0;
+  unsigned long lastLanAttempt = 0;
   uint8_t wifiFailures = 0; // Saturating count; never blocks recovery.
   String savedSsid;
   String savedPassword;
@@ -400,7 +402,11 @@ namespace {
     if (status == WL_CONNECTED) {
       if (!wifiWasConnected) {
         wifiWasConnected = true;
-        startLanServer();
+        lastLanAttempt = now - LAN_RETRY_MS; // Start promptly on association.
+      }
+      if (!lanServer && uint32_t(now - lastLanAttempt) >= LAN_RETRY_MS) {
+        lastLanAttempt = now;
+        startLanServer(); // Retry briefly if the HTTP socket could not be created.
       }
       if (wifiConnecting) {
         wifiConnecting = false;
