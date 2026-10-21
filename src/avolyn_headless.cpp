@@ -15,6 +15,7 @@ namespace {
   constexpr char FIRMWARE_VERSION[] = "0.2.0-dev";
   constexpr unsigned long WIFI_TIMEOUT_MS = 20000;
   constexpr unsigned long WIFI_RETRY_BACKOFF_MS = 15000;
+  constexpr unsigned long WIFI_RETRY_AFTER_MS = WIFI_TIMEOUT_MS + WIFI_RETRY_BACKOFF_MS;
   constexpr size_t SERIAL_LINE_MAX = 1024;
 
   Preferences wifiPrefs;
@@ -382,8 +383,9 @@ namespace {
 
   void updateWifi() {
     if (!wifiConnecting) {
-      if (avolyn::shouldRetrySavedWifi(WiFi.status() == WL_CONNECTED, false, savedWifiConfigured, millis(),
-                                      connectionStart, WIFI_TIMEOUT_MS, WIFI_RETRY_BACKOFF_MS)) {
+      const bool online = WiFi.status() == WL_CONNECTED;
+      const unsigned long elapsed = millis() - connectionStart;
+      if (avolyn::shouldRetrySavedWifi(online, false, savedWifiConfigured, elapsed, WIFI_RETRY_AFTER_MS)) {
         // Do not read NVS every loop or resend credentials until the backoff expires.
         const String savedSsid = wifiPrefs.getString("ssid", "");
         if (!savedSsid.isEmpty()) {
