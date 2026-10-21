@@ -74,8 +74,8 @@ namespace {
     result["macAddress"] = WiFi.macAddress();
     result["autoAttempts"] = savedWifiAttempts;
     result["maxAutoAttempts"] = avolyn::MAX_SAVED_WIFI_ATTEMPTS;
-    result["retryExhausted"] = savedWifiConfigured && WiFi.status() != WL_CONNECTED &&
-                               !wifiConnecting && savedWifiAttempts >= avolyn::MAX_SAVED_WIFI_ATTEMPTS;
+    const bool outOfTries = savedWifiAttempts >= avolyn::MAX_SAVED_WIFI_ATTEMPTS;
+    result["retryExhausted"] = savedWifiConfigured && !wifiConnecting && WiFi.status() != WL_CONNECTED && outOfTries;
     sendJson(result);
   }
 
