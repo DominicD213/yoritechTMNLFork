@@ -47,6 +47,10 @@ namespace {
   unsigned long lastWifiPoll = 0;
   unsigned long lastLanAttempt = 0;
   uint8_t wifiFailures = 0; // Saturating count; never blocks recovery.
+  unsigned long lastJoinDurationMs = 0;
+  unsigned long lastFailedAttemptMs = 0;
+  int lastFailedWiFiStatus = -1;
+  bool hasJoinDuration = false;
   String savedSsid;
   String savedPassword;
   String pendingSsid;
@@ -81,6 +85,12 @@ namespace {
     result["reconnectFailures"] = wifiFailures;
     result["retryDelayMs"] = avolyn::wifiRetryDelayMs(wifiFailures);
     result["automaticRetryEnabled"] = savedWifiConfigured;
+    result["connectionElapsedMs"] = wifiConnecting ? uint32_t(millis() - connectionStart) : 0;
+    result["lastJoinDurationMs"] = hasJoinDuration ? lastJoinDurationMs : 0;
+    result["hasJoinDuration"] = hasJoinDuration;
+    result["lastFailedAttemptMs"] = lastFailedAttemptMs;
+    result["lastFailedWiFiStatus"] = lastFailedWiFiStatus;
+    result["signalDbm"] = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
     sendJson(result);
   }
 
@@ -410,6 +420,8 @@ namespace {
       }
       if (wifiConnecting) {
         wifiConnecting = false;
+        lastJoinDurationMs = uint32_t(now - connectionStart);
+        hasJoinDuration = true;
         wifiFailures = 0;
         if (saveAfterConnection && (savedSsid != pendingSsid || savedPassword != pendingPassword)) {
           // Cache credentials; write NVS only for a newly successful network.
@@ -444,6 +456,8 @@ namespace {
       const bool failedEarly = rejected && uint32_t(now - connectionStart) >= 2000;
       if (withinTimeout && !failedEarly) return;
       const bool userRequest = saveAfterConnection;
+      lastFailedAttemptMs = uint32_t(now - connectionStart);
+      lastFailedWiFiStatus = static_cast<int>(status);
       wifiConnecting = false;
       saveAfterConnection = false;
       pendingSsid = "";
