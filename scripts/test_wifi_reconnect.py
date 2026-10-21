@@ -15,18 +15,21 @@ source = r'''
 int main() {
   using avolyn::shouldRetrySavedWifi;
   constexpr uint32_t delay = 35000U;
-  assert(!shouldRetrySavedWifi(false, false, false, 50000, delay)); // No saved credentials.
-  assert(!shouldRetrySavedWifi(false, true, true, 50000, delay)); // Attempt in progress.
-  assert(!shouldRetrySavedWifi(true, false, true, 50000, delay)); // Already joined.
-  assert(!shouldRetrySavedWifi(false, false, true, 34999, delay)); // Backoff not finished.
-  assert(shouldRetrySavedWifi(false, false, true, 35000, delay));
-  assert(!shouldRetrySavedWifi(false, false, true, 55000U - 25000U, delay));
-  assert(shouldRetrySavedWifi(false, false, true, 60000U - 25000U, delay));
-  // ESP32 millis() wraps, but elapsed subtraction remains correct using uint32_t.
+  assert(!shouldRetrySavedWifi(false, false, false, 50000, delay, 0)); // No credentials.
+  assert(!shouldRetrySavedWifi(false, true, true, 50000, delay, 1));  // In progress.
+  assert(!shouldRetrySavedWifi(true, false, true, 50000, delay, 2));  // Connected.
+  assert(!shouldRetrySavedWifi(false, false, true, 34999, delay, 1)); // Backoff active.
+  assert(shouldRetrySavedWifi(false, false, true, 35000, delay, 0));  // Initial retry.
+  assert(shouldRetrySavedWifi(false, false, true, 35000, delay, 1));  // Second attempt.
+  assert(shouldRetrySavedWifi(false, false, true, 35000, delay, 2));  // Third attempt.
+  assert(!shouldRetrySavedWifi(false, false, true, 60000, delay, 3)); // Exhausted.
+  assert(!shouldRetrySavedWifi(false, false, true, 60000, delay, 255));
+  assert(shouldRetrySavedWifi(false, false, true, 35000, delay, 0));  // Manual reset.
+  // Unsigned millis() subtraction must stay valid after rollover.
   const uint32_t previous = UINT32_MAX - 1000;
-  assert(!shouldRetrySavedWifi(false, false, true, uint32_t(32998U - previous), delay));
-  assert(shouldRetrySavedWifi(false, false, true, uint32_t(33999U - previous), delay));
-  std::cout << "Saved Wi-Fi retry scheduling and timer wrap tests passed.\n";
+  assert(!shouldRetrySavedWifi(false, false, true, uint32_t(32998U - previous), delay, 2));
+  assert(shouldRetrySavedWifi(false, false, true, uint32_t(33999U - previous), delay, 2));
+  std::cout << "Bounded Wi-Fi retries and timer rollover tests passed.\\n";
 }
 '''
 with tempfile.TemporaryDirectory(prefix="avolyn-wifi-") as folder:
