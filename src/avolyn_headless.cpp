@@ -12,10 +12,10 @@
 #include "avolyn_wifi_reconnect.h"
 
 namespace {
-  constexpr char FIRMWARE_VERSION[] = "0.2.2-dev";
-  constexpr unsigned long WIFI_TIMEOUT_MS = 20000;
-  constexpr unsigned long WIFI_RETRY_BACKOFF_MS = 15000;
-  constexpr unsigned long WIFI_RETRY_AFTER_MS = WIFI_TIMEOUT_MS + WIFI_RETRY_BACKOFF_MS;
+  constexpr char FIRMWARE_VERSION[] = "0.2.3-dev";
+  constexpr unsigned long WIFI_TIMEOUT_MS = 15000;
+  constexpr unsigned long WIFI_POLL_MS = 250; // 4 inexpensive status checks/sec instead of ~500/sec.
+  constexpr unsigned long LAN_RETRY_MS = 5000;
   constexpr size_t SERIAL_LINE_MAX = 1024;
 
   Preferences wifiPrefs;
@@ -41,8 +41,18 @@ namespace {
   bool wifiConnecting = false;
   bool saveAfterConnection = false;
   bool savedWifiConfigured = false;
-  uint8_t savedWifiAttempts = 0; // Count the initial boot connection and each automatic retry.
+  bool wifiWasConnected = false;
   unsigned long connectionStart = 0;
+  unsigned long lastWifiFailureAt = 0;
+  unsigned long lastWifiPoll = 0;
+  unsigned long lastLanAttempt = 0;
+  uint8_t wifiFailures = 0; // Saturating count; never blocks recovery.
+  unsigned long lastJoinDurationMs = 0;
+  unsigned long lastFailedAttemptMs = 0;
+  int lastFailedWiFiStatus = -1;
+  bool hasJoinDuration = false;
+  String savedSsid;
+  String savedPassword;
   String pendingSsid;
   String pendingPassword;
 
@@ -72,10 +82,15 @@ namespace {
     result["ssid"] = (WiFi.status() == WL_CONNECTED) ? WiFi.SSID() : "";
     result["ip"] = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "";
     result["macAddress"] = WiFi.macAddress();
-    result["autoAttempts"] = savedWifiAttempts;
-    result["maxAutoAttempts"] = avolyn::MAX_SAVED_WIFI_ATTEMPTS;
-    const bool outOfTries = savedWifiAttempts >= avolyn::MAX_SAVED_WIFI_ATTEMPTS;
-    result["retryExhausted"] = savedWifiConfigured && !wifiConnecting && WiFi.status() != WL_CONNECTED && outOfTries;
+    result["reconnectFailures"] = wifiFailures;
+    result["retryDelayMs"] = avolyn::wifiRetryDelayMs(wifiFailures);
+    result["automaticRetryEnabled"] = savedWifiConfigured;
+    result["connectionElapsedMs"] = wifiConnecting ? uint32_t(millis() - connectionStart) : 0;
+    result["lastJoinDurationMs"] = hasJoinDuration ? lastJoinDurationMs : 0;
+    result["hasJoinDuration"] = hasJoinDuration;
+    result["lastFailedAttemptMs"] = lastFailedAttemptMs;
+    result["lastFailedWiFiStatus"] = lastFailedWiFiStatus;
+    result["signalDbm"] = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
     sendJson(result);
   }
 
@@ -212,6 +227,9 @@ namespace {
       status["firmwareVersion"] = FIRMWARE_VERSION;
       status["macAddress"] = WiFi.macAddress();
       status["wifiConnected"] = (WiFi.status() == WL_CONNECTED);
+      status["wifiJoinTimeKnown"] = hasJoinDuration;
+      status["wifiJoinDurationMs"] = hasJoinDuration ? lastJoinDurationMs : 0;
+      status["wifiSignalDbm"] = WiFi.RSSI();
       status["paired"] = true;
       String plainStatus;
       serializeJson(status, plainStatus);
@@ -283,19 +301,14 @@ namespace {
     WiFi.scanDelete();
   }
 
-  void connectWifi(const String &ssid, const String &password, bool rememberAfterSuccess, bool announce = true,
-                   bool automatic = false) {
+  void connectWifi(const String &ssid, const String &password, bool rememberAfterSuccess, bool announce = true) {
     if (ssid.isEmpty() || ssid.length() > 32 || password.length() > 63 ||
         (!password.isEmpty() && password.length() < 8)) {
       if (announce) sendError("Invalid Wi-Fi name or password length.");
       return;
     }
-    if (automatic) {
-      if (savedWifiAttempts >= avolyn::MAX_SAVED_WIFI_ATTEMPTS) return;
-      ++savedWifiAttempts;
-    } else {
-      savedWifiAttempts = 0; // Explicit USB setup is always allowed after automatic attempts are exhausted.
-    }
+    // Explicit USB setup and automatic reconnection share the same non-blocking
+    // association path. Wi-Fi credentials are saved only after a verified join.
     pendingSsid = ssid;
     pendingPassword = password;
     saveAfterConnection = rememberAfterSuccess;
@@ -352,7 +365,9 @@ namespace {
       wifiPrefs.remove("ssid");
       wifiPrefs.remove("pass");
       savedWifiConfigured = false;
-      savedWifiAttempts = 0;
+      wifiFailures = 0;
+      savedSsid = "";
+      savedPassword = "";
       saveAfterConnection = false;
       pendingPassword = "";
       pendingSsid = "";
@@ -394,45 +409,75 @@ namespace {
     }
   }
 
-  void updateWifi() {
-    if (!wifiConnecting) {
-      const bool online = WiFi.status() == WL_CONNECTED;
-      const unsigned long elapsed = millis() - connectionStart;
-      if (avolyn::shouldRetrySavedWifi(online, false, savedWifiConfigured, elapsed, WIFI_RETRY_AFTER_MS,
-                                       savedWifiAttempts)) {
-        // Do not read NVS every loop or resend credentials until the backoff expires.
-        const String savedSsid = wifiPrefs.getString("ssid", "");
-        if (!savedSsid.isEmpty()) {
-          connectWifi(savedSsid, wifiPrefs.getString("pass", ""), false, false, true);
-        } else {
-          savedWifiConfigured = false;
+  void updateWifi(unsigned long now) {
+    const wl_status_t status = WiFi.status();
+
+    if (status == WL_CONNECTED) {
+      if (!wifiWasConnected) {
+        wifiWasConnected = true;
+        lastLanAttempt = now - LAN_RETRY_MS; // Start promptly on association.
+      }
+      if (!lanServer && uint32_t(now - lastLanAttempt) >= LAN_RETRY_MS) {
+        lastLanAttempt = now;
+        startLanServer(); // Retry briefly if the HTTP socket could not be created.
+      }
+      if (wifiConnecting) {
+        wifiConnecting = false;
+        lastJoinDurationMs = uint32_t(now - connectionStart);
+        hasJoinDuration = true;
+        wifiFailures = 0;
+        if (saveAfterConnection && (savedSsid != pendingSsid || savedPassword != pendingPassword)) {
+          // Cache credentials; write NVS only for a newly successful network.
+          wifiPrefs.putString("ssid", pendingSsid);
+          wifiPrefs.putString("pass", pendingPassword);
+          savedSsid = pendingSsid;
+          savedPassword = pendingPassword;
+          savedWifiConfigured = true;
         }
+        saveAfterConnection = false;
+        pendingSsid = "";
+        pendingPassword = "";
+        sendWifiStatus();
       }
       return;
     }
-    if (WiFi.status() == WL_CONNECTED) {
-      wifiConnecting = false;
-      savedWifiAttempts = 0; // A new connection episode gets a fresh three-attempt budget.
-      startLanServer();
-      if (saveAfterConnection) {
-            // Store only after successful association. Arduino Preferences uses NVS;
-            // production builds should also enable appropriate flash encryption.
-        wifiPrefs.putString("ssid", pendingSsid);
-        wifiPrefs.putString("pass", pendingPassword);
-        savedWifiConfigured = true;
+
+    if (wifiWasConnected) {
+      wifiWasConnected = false;
+      if (lanServer) {
+        httpd_stop(lanServer);
+        lanServer = nullptr;
       }
-      saveAfterConnection = false;
-      pendingPassword = "";
-      pendingSsid = "";
-      sendWifiStatus();
-    } else if (millis() - connectionStart >= WIFI_TIMEOUT_MS) {
-      const bool manualRequest = saveAfterConnection;
+      challenge.active = false;
+      lastWifiFailureAt = now;
+      wifiFailures = 0; // Start fast after a previously healthy association drops.
+    }
+
+    if (wifiConnecting) {
+      const bool rejected = (status == WL_CONNECT_FAILED || status == WL_NO_SSID_AVAIL);
+      const bool withinTimeout = uint32_t(now - connectionStart) < WIFI_TIMEOUT_MS;
+      const bool failedEarly = rejected && uint32_t(now - connectionStart) >= 2000;
+      if (withinTimeout && !failedEarly) return;
+      const bool userRequest = saveAfterConnection;
+      lastFailedAttemptMs = uint32_t(now - connectionStart);
+      lastFailedWiFiStatus = static_cast<int>(status);
       wifiConnecting = false;
       saveAfterConnection = false;
-      pendingPassword = "";
       pendingSsid = "";
+      pendingPassword = "";
+      lastWifiFailureAt = now;
+      if (wifiFailures < 255) ++wifiFailures;
       WiFi.disconnect(false, false);
-      if (manualRequest) sendError("Wi-Fi connection timed out. Check network/password.");
+      if (userRequest) sendError("Wi-Fi connection failed. Check 2.4 GHz network/password.");
+      return;
+    }
+
+    const uint32_t timeSinceFailure = now - lastWifiFailureAt;
+    const uint32_t retryDelay = avolyn::wifiRetryDelayMs(wifiFailures);
+    if (avolyn::shouldRetrySavedWifi(false, false, savedWifiConfigured, timeSinceFailure, retryDelay)) {
+      // Credentials are cached after boot; no flash reads, active scans or USB
+      // interactions on every retry. This continues at a low rate indefinitely.
+      connectWifi(savedSsid, savedPassword, false, false);
     }
   }
 } // namespace
@@ -440,7 +485,7 @@ namespace {
 void setup() {
   Serial.begin(115200);
   WiFi.mode(WIFI_STA);
-  // The firmware owns retries and limits them; do not allow Arduino to retry indefinitely.
+  // Our bounded-rate retry scheduler owns associations, not Arduino's rapid reconnect loop.
   WiFi.setAutoReconnect(false);
   WiFi.setSleep(false);
   wifiPrefs.begin("avolyn_wifi", false);
@@ -455,21 +500,23 @@ void setup() {
     }
   }
   Serial.println("AVOLYN_SLATE_HEADLESS_READY");
-  const String savedSsid = wifiPrefs.getString("ssid", "");
+  savedSsid = wifiPrefs.getString("ssid", "");
+  savedPassword = wifiPrefs.getString("pass", "");
   savedWifiConfigured = !savedSsid.isEmpty();
   if (savedWifiConfigured) {
-    // Reconnect after real power loss; no USB command or unsolicited WIFI_SET ACK.
-    connectWifi(savedSsid, wifiPrefs.getString("pass", ""), false, false, true);
+    // Immediate attempt at boot; retries are event-paced, even with only wall power.
+    connectWifi(savedSsid, savedPassword, false, false);
   }
 }
 
 void loop() {
   processUsb();
-  updateWifi();
-  if (WiFi.status() == WL_CONNECTED) {
-    startLanServer();
+  const unsigned long now = millis();
+  if (uint32_t(now - lastWifiPoll) >= WIFI_POLL_MS) {
+    lastWifiPoll = now;
+    updateWifi(now);
   }
-  delay(2);
+  delay(10); // Yield to the ESP32 Wi-Fi/HTTP tasks; avoid CPU-intensive busy-polling.
 }
 
 #endif
