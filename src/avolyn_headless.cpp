@@ -12,7 +12,7 @@
 #include "avolyn_wifi_reconnect.h"
 
 namespace {
-  constexpr char FIRMWARE_VERSION[] = "0.2.0-dev";
+  constexpr char FIRMWARE_VERSION[] = "0.2.1-dev";
   constexpr unsigned long WIFI_TIMEOUT_MS = 20000;
   constexpr unsigned long WIFI_RETRY_BACKOFF_MS = 15000;
   constexpr unsigned long WIFI_RETRY_AFTER_MS = WIFI_TIMEOUT_MS + WIFI_RETRY_BACKOFF_MS;
