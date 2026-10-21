@@ -434,8 +434,9 @@ namespace {
 
     if (wifiConnecting) {
       const bool rejected = (status == WL_CONNECT_FAILED || status == WL_NO_SSID_AVAIL);
-      if (uint32_t(now - connectionStart) < WIFI_TIMEOUT_MS &&
-          !(rejected && uint32_t(now - connectionStart) >= 2000)) return;
+      const bool withinTimeout = uint32_t(now - connectionStart) < WIFI_TIMEOUT_MS;
+      const bool failedEarly = rejected && uint32_t(now - connectionStart) >= 2000;
+      if (withinTimeout && !failedEarly) return;
       const bool userRequest = saveAfterConnection;
       wifiConnecting = false;
       saveAfterConnection = false;
@@ -448,8 +449,9 @@ namespace {
       return;
     }
 
-    if (avolyn::shouldRetrySavedWifi(false, false, savedWifiConfigured,
-                                     uint32_t(now - lastWifiFailureAt), avolyn::wifiRetryDelayMs(wifiFailures))) {
+    const uint32_t timeSinceFailure = now - lastWifiFailureAt;
+    const uint32_t retryDelay = avolyn::wifiRetryDelayMs(wifiFailures);
+    if (avolyn::shouldRetrySavedWifi(false, false, savedWifiConfigured, timeSinceFailure, retryDelay)) {
       // Credentials are cached after boot; no flash reads, active scans or USB
       // interactions on every retry. This continues at a low rate indefinitely.
       connectWifi(savedSsid, savedPassword, false, false);
