@@ -3,17 +3,19 @@
 // Avolyn's temporary display-free USB -> Wi-Fi provisioning firmware.
 // Does not run stock TRMNL display, QA, setup portal, or image polling.
 #include <ArduinoJson.h>
+#include <ESPmDNS.h>
 #include <Preferences.h>
 #include <WiFi.h>
+#include <atomic>
 #include <esp_http_server.h>
 #include <esp_system.h>
 
 #include "avolyn_pairing_crypto.h"
+#include "avolyn_wifi_credentials.h"
 #include "avolyn_wifi_reconnect.h"
 
 namespace {
-  constexpr char FIRMWARE_VERSION[] = "0.2.3-dev";
-  constexpr unsigned long WIFI_TIMEOUT_MS = 15000;
+  constexpr char FIRMWARE_VERSION[] = "0.2.4-dev";
   constexpr unsigned long WIFI_POLL_MS = 250; // 4 inexpensive status checks/sec instead of ~500/sec.
   constexpr unsigned long LAN_RETRY_MS = 5000;
   constexpr size_t SERIAL_LINE_MAX = 1024;
@@ -42,6 +44,12 @@ namespace {
   bool saveAfterConnection = false;
   bool savedWifiConfigured = false;
   bool wifiWasConnected = false;
+  bool mdnsStarted = false;
+  bool wifiStorageError = false;
+  std::atomic<uint8_t> wifiEvents{0};
+  std::atomic<uint16_t> lastDisconnectReason{0};
+  std::atomic<uint32_t> associatedAt{0};
+  std::atomic<bool> wifiAssociated{false};
   unsigned long connectionStart = 0;
   unsigned long lastWifiFailureAt = 0;
   unsigned long lastWifiPoll = 0;
@@ -57,6 +65,7 @@ namespace {
   String pendingPassword;
 
   void sendJson(JsonDocument &doc) {
+    if (!Serial) return; // Wall-power recovery must never wait for a USB host.
     serializeJson(doc, Serial);
     Serial.println();
   }
@@ -85,6 +94,12 @@ namespace {
     result["reconnectFailures"] = wifiFailures;
     result["retryDelayMs"] = avolyn::wifiRetryDelayMs(wifiFailures);
     result["automaticRetryEnabled"] = savedWifiConfigured;
+    result["credentialsSaved"] =
+      !wifiStorageError && savedWifiConfigured && (WiFi.status() != WL_CONNECTED || WiFi.SSID() == savedSsid);
+    result["storageError"] = wifiStorageError;
+    result["lastDisconnectReason"] = lastDisconnectReason.load();
+    result["resetReason"] = static_cast<int>(esp_reset_reason());
+    result["uptimeMs"] = millis();
     result["connectionElapsedMs"] = wifiConnecting ? uint32_t(millis() - connectionStart) : 0;
     result["lastJoinDurationMs"] = hasJoinDuration ? lastJoinDurationMs : 0;
     result["hasJoinDuration"] = hasJoinDuration;
@@ -230,6 +245,11 @@ namespace {
       status["wifiJoinTimeKnown"] = hasJoinDuration;
       status["wifiJoinDurationMs"] = hasJoinDuration ? lastJoinDurationMs : 0;
       status["wifiSignalDbm"] = WiFi.RSSI();
+      status["credentialsSaved"] = !wifiStorageError && savedWifiConfigured;
+      status["storageError"] = wifiStorageError;
+      status["wifiDisconnectReason"] = lastDisconnectReason.load();
+      status["resetReason"] = static_cast<int>(esp_reset_reason());
+      status["uptimeMs"] = millis();
       status["paired"] = true;
       String plainStatus;
       serializeJson(status, plainStatus);
@@ -273,12 +293,28 @@ namespace {
     challengeRoute.uri = "/challenge";
     challengeRoute.method = HTTP_GET;
     challengeRoute.handler = handleChallenge;
-    httpd_register_uri_handler(lanServer, &challengeRoute);
+    const esp_err_t challengeRegistered = httpd_register_uri_handler(lanServer, &challengeRoute);
     httpd_uri_t statusRoute = {};
     statusRoute.uri = "/status";
     statusRoute.method = HTTP_POST;
     statusRoute.handler = handleLanStatus;
-    httpd_register_uri_handler(lanServer, &statusRoute);
+    if (challengeRegistered != ESP_OK || httpd_register_uri_handler(lanServer, &statusRoute) != ESP_OK) {
+      httpd_stop(lanServer);
+      lanServer = nullptr;
+      return;
+    }
+  }
+
+  void startDiscovery() {
+    if (mdnsStarted || !lanServer) return;
+    String hostname = "avolyn-slate-" + WiFi.macAddress();
+    hostname.replace(":", "");
+    hostname.toLowerCase();
+    mdnsStarted = MDNS.begin(hostname.c_str());
+    if (mdnsStarted) {
+      MDNS.addService("avolyn-slate", "tcp", 8080);
+      MDNS.addServiceTxt("avolyn-slate", "tcp", "protocol", avolyn::PROTOCOL);
+    }
   }
 
   void scanWifi() {
@@ -314,6 +350,8 @@ namespace {
     saveAfterConnection = rememberAfterSuccess;
     wifiConnecting = true;
     connectionStart = millis();
+    wifiAssociated.store(false);
+    wifiEvents.store(0);
     WiFi.disconnect(false, false);
     WiFi.begin(pendingSsid.c_str(), pendingPassword.c_str());
 
@@ -362,8 +400,15 @@ namespace {
       }
       connectWifi(command["ssid"].as<String>(), command["password"].as<String>(), true);
     } else if (strcmp(name, "WIFI_FORGET") == 0) {
-      wifiPrefs.remove("ssid");
-      wifiPrefs.remove("pass");
+      // Do not claim successful removal if durable credentials remain.
+      for (const char *key : {"record", "ssid", "pass"}) {
+        if (wifiPrefs.isKey(key) && !wifiPrefs.remove(key)) {
+          wifiStorageError = true;
+          sendError("Saved Wi-Fi settings could not be removed. Retry.");
+          return;
+        }
+      }
+      wifiStorageError = false;
       savedWifiConfigured = false;
       wifiFailures = 0;
       savedSsid = "";
@@ -383,6 +428,7 @@ namespace {
   }
 
   void processUsb() {
+    if (!Serial) return;
     while (Serial.available() > 0) {
       const char ch = static_cast<char>(Serial.read());
       if (ch == '\r') continue;
@@ -411,28 +457,56 @@ namespace {
 
   void updateWifi(unsigned long now) {
     const wl_status_t status = WiFi.status();
+    const uint8_t events = wifiEvents.exchange(0);
+    if ((events & 1) || (wifiWasConnected && status != WL_CONNECTED)) {
+      if (wifiWasConnected) {
+        wifiWasConnected = false;
+        if (mdnsStarted) {
+          MDNS.end();
+          mdnsStarted = false;
+        }
+        if (lanServer) {
+          httpd_stop(lanServer);
+          lanServer = nullptr;
+        }
+        {
+          PairingGuard guard;
+          if (guard.locked) challenge.active = false;
+        }
+        lastWifiFailureAt = now;
+        wifiFailures = 0;
+        // A single transition notification; status polling is never required for recovery.
+        if (status != WL_CONNECTED) sendWifiStatus();
+      }
+    }
 
     if (status == WL_CONNECTED) {
       if (!wifiWasConnected) {
         wifiWasConnected = true;
         lastLanAttempt = now - LAN_RETRY_MS; // Start promptly on association.
       }
-      if (!lanServer && uint32_t(now - lastLanAttempt) >= LAN_RETRY_MS) {
+      if ((!lanServer || !mdnsStarted) && uint32_t(now - lastLanAttempt) >= LAN_RETRY_MS) {
         lastLanAttempt = now;
         startLanServer(); // Retry briefly if the HTTP socket could not be created.
+        startDiscovery();
       }
       if (wifiConnecting) {
         wifiConnecting = false;
         lastJoinDurationMs = uint32_t(now - connectionStart);
         hasJoinDuration = true;
         wifiFailures = 0;
-        if (saveAfterConnection && (savedSsid != pendingSsid || savedPassword != pendingPassword)) {
+        if (saveAfterConnection && (wifiStorageError || !savedWifiConfigured || savedSsid != pendingSsid ||
+                                    savedPassword != pendingPassword)) {
           // Cache credentials; write NVS only for a newly successful network.
-          wifiPrefs.putString("ssid", pendingSsid);
-          wifiPrefs.putString("pass", pendingPassword);
-          savedSsid = pendingSsid;
-          savedPassword = pendingPassword;
-          savedWifiConfigured = true;
+          const avolyn::WifiCredentials credentials{pendingSsid.c_str(), pendingPassword.c_str()};
+          const bool persisted = avolyn::saveWifiCredentials(wifiPrefs, credentials);
+          wifiStorageError = !persisted;
+          if (persisted) {
+            savedSsid = pendingSsid;
+            savedPassword = pendingPassword;
+            savedWifiConfigured = true;
+          } else
+            sendError("Wi-Fi connected, but settings could not be saved for wall-power reboot. Retry setup.");
         }
         saveAfterConnection = false;
         pendingSsid = "";
@@ -442,20 +516,10 @@ namespace {
       return;
     }
 
-    if (wifiWasConnected) {
-      wifiWasConnected = false;
-      if (lanServer) {
-        httpd_stop(lanServer);
-        lanServer = nullptr;
-      }
-      challenge.active = false;
-      lastWifiFailureAt = now;
-      wifiFailures = 0; // Start fast after a previously healthy association drops.
-    }
-
     if (wifiConnecting) {
       const bool rejected = (status == WL_CONNECT_FAILED || status == WL_NO_SSID_AVAIL);
-      const bool withinTimeout = uint32_t(now - connectionStart) < WIFI_TIMEOUT_MS;
+      const bool withinTimeout = !avolyn::wifiAttemptExpired(uint32_t(now - connectionStart), wifiAssociated.load(),
+                                                             uint32_t(now - associatedAt.load()));
       const bool failedEarly = rejected && uint32_t(now - connectionStart) >= 2000;
       if (withinTimeout && !failedEarly) return;
       const bool userRequest = saveAfterConnection;
@@ -484,11 +548,26 @@ namespace {
 
 void setup() {
   Serial.begin(115200);
+  Serial.setTxTimeoutMs(10);
+  // NVS below is our credential store; avoid an independent SDK flash/config path.
+  WiFi.persistent(false);
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+    // Event callbacks run on another task. Keep them bounded; the main loop
+    // owns NVS, HTTP teardown/startup and backoff, including without USB.
+    if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+      lastDisconnectReason.store(info.wifi_sta_disconnected.reason);
+      wifiAssociated.store(false);
+      wifiEvents.fetch_or(1);
+    } else if (event == ARDUINO_EVENT_WIFI_STA_CONNECTED) {
+      associatedAt.store(millis());
+      wifiAssociated.store(true);
+    }
+  });
   WiFi.mode(WIFI_STA);
   // Our bounded-rate retry scheduler owns associations, not Arduino's rapid reconnect loop.
   WiFi.setAutoReconnect(false);
   WiFi.setSleep(false);
-  wifiPrefs.begin("avolyn_wifi", false);
+  wifiStorageError = !wifiPrefs.begin("avolyn_wifi", false);
 
   pairingMutex = xSemaphoreCreateMutex();
   if (pairingMutex && pairingPrefs.begin("avolyn_pair", false)) {
@@ -499,14 +578,21 @@ void setup() {
       pairedSecret = record.substring(32);
     }
   }
-  Serial.println("AVOLYN_SLATE_HEADLESS_READY");
-  savedSsid = wifiPrefs.getString("ssid", "");
-  savedPassword = wifiPrefs.getString("pass", "");
-  savedWifiConfigured = !savedSsid.isEmpty();
+  avolyn::WifiCredentials credentials;
+  const auto loaded = avolyn::loadWifiCredentials(wifiPrefs, credentials);
+  savedWifiConfigured = loaded == avolyn::WifiLoad::Saved || loaded == avolyn::WifiLoad::Legacy;
+  if (savedWifiConfigured) {
+    savedSsid = credentials.ssid.c_str();
+    savedPassword = credentials.password.c_str();
+    if (loaded == avolyn::WifiLoad::Legacy && !avolyn::saveWifiCredentials(wifiPrefs, credentials))
+      wifiStorageError = true;
+  } else if (loaded == avolyn::WifiLoad::Invalid)
+    wifiStorageError = true;
   if (savedWifiConfigured) {
     // Immediate attempt at boot; retries are event-paced, even with only wall power.
     connectWifi(savedSsid, savedPassword, false, false);
   }
+  if (Serial) Serial.println("AVOLYN_SLATE_HEADLESS_READY");
 }
 
 void loop() {

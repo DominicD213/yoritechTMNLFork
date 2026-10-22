@@ -25,7 +25,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libmbedtls-dev
           python scripts/test_pairing_crypto.py
-      - name: Test saved Wi-Fi reboot and reconnect scheduling
-        run: python scripts/test_wifi_reconnect.py
       - name: Compile the actual XIAO headless pairing target (no upload)
         run: pio run -e avolyn_headless -j 4
+      - name: Test saved Wi-Fi reboot, credential persistence and reconnect scheduling
+        run: |
+          python scripts/test_wifi_reconnect.py
+          python scripts/test_wifi_credentials.py

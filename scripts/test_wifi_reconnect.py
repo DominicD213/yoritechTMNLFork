@@ -32,6 +32,12 @@ int main() {
   const uint32_t previous = UINT32_MAX - 1000;
   assert(!shouldRetrySavedWifi(false, false, true, uint32_t(998U - previous), 2000));
   assert(shouldRetrySavedWifi(false, false, true, uint32_t(999U - previous), 2000));
+  assert(!avolyn::wifiAttemptExpired(15000, false, 0));
+  assert(!avolyn::wifiAttemptExpired(29999, false, 0));
+  assert(avolyn::wifiAttemptExpired(30000, false, 0));
+  assert(!avolyn::wifiAttemptExpired(31000, true, 2000));
+  assert(avolyn::wifiAttemptExpired(31000, true, 15000));
+  assert(avolyn::wifiAttemptExpired(45000, true, 1000));
   std::cout << "Persistent Wi-Fi backoff and rollover tests passed.\\n";
 }
 '''
