@@ -28,8 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
       - name: Test factory image packaging and OTA guards
@@ -45,11 +45,11 @@ jobs:
       AVOLYN_VERSION: ${{ inputs.version }}
       DRAFT_REQUESTED: ${{ inputs.create_draft_release }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.platformio/.cache
           key: avolyn-release-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
@@ -76,7 +76,7 @@ jobs:
             --output "out/$OUT"
           sha256sum "out/$OUT" > "out/$OUT.sha256"
       - name: Retain package, release manifest and checksum for review
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: avolyn-slate-firmware-candidate
           path: out/*
@@ -95,7 +95,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
     steps:
       - name: Download already validated firmware release assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: avolyn-slate-firmware-candidate
           path: out
