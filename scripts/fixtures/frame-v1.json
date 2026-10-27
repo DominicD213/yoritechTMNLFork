@@ -1,0 +1,33 @@
+{
+  "protocol": "avolyn-frame-v1",
+  "profile": "waveshare-579-bw",
+  "pixelFormat": "mono1-msb-white1",
+  "width": 792,
+  "height": 272,
+  "stride": 99,
+  "bytes": 26928,
+  "maxChunkBytes": 512,
+  "blackPixelsOnFirstRow": [
+    0,
+    7,
+    8,
+    395,
+    396,
+    791
+  ],
+  "blackLastRow": true,
+  "base64Examples": [
+    {
+      "hex": "000102feff",
+      "base64": "AAEC/v8="
+    },
+    {
+      "hex": "ff",
+      "base64": "/w=="
+    },
+    {
+      "hex": "ffff",
+      "base64": "//8="
+    }
+  ]
+}
