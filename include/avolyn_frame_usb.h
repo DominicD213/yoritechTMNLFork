@@ -50,7 +50,9 @@ namespace avolyn {
     const char *requestId = frameText(command["requestId"], 32);
     const char *id = frameText(command["transferId"], 32);
     const char *error = nullptr;
-    if (!frameHex(requestId, 32)) {
+    if (command["cmd"].as<JsonString>().size() != std::strlen(name)) {
+      error = "invalid_command";
+    } else if (!frameHex(requestId, 32)) {
       error = "invalid_request";
     } else if (std::strcmp(name, "FRAME_CAPS") == 0) {
       reply["protocol"] = FRAME_PROTOCOL;
@@ -89,7 +91,7 @@ namespace avolyn {
       error = "unsupported_command";
     }
     reply["type"] = "FRAME_REPLY";
-    reply["cmd"] = name;
+    reply["cmd"] = command["cmd"];
     reply["requestId"] = requestId;
     reply["ok"] = error == nullptr;
     if (error) reply["error"] = error;

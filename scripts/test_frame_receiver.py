@@ -114,6 +114,8 @@ with tempfile.TemporaryDirectory(prefix="avolyn-frame-") as folder:
         assert chunk(first, 0, image[:512])["nextOffset"] == 512
         assert chunk(first, 0, image[:512])["nextOffset"] == 512
         assert not chunk(first, 0, bytes(512))["ok"]
+        assert send("FRAME_CANCEL\u0000suffix", transferId=first)["error"] == "invalid_command"
+        assert send("FRAME_STATUS")["receivingTransferId"] == first
         assert not send("FRAME_COMMIT", transferId=first)["ok"]
         assert not send("FRAME_CANCEL", transferId=second)["ok"]
         for offset in range(512, len(image), 512):
@@ -124,7 +126,7 @@ with tempfile.TemporaryDirectory(prefix="avolyn-frame-") as folder:
         assert accepted["sha256"] == hashlib.sha256(image).hexdigest()
         assert send("FRAME_COMMIT", transferId=first)["ok"], "commit retry is idempotent"
         assert send("FRAME_CANCEL", transferId=first)["acceptedFrameId"] == first
-        assert not send("FRAME_BEGIN", **manifest(first, image))["ok"], "cannot reuse committed ID"
+        assert not send("FRAME_BEGIN", **manifest(first, image))["ok"], "cannot reuse currently accepted ID"
 
         # A complete corrupt transfer cannot replace the last valid frame.
         assert send("FRAME_BEGIN", **manifest(second, bytes(len(image))))["ok"]
