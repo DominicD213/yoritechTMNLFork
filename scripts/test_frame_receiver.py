@@ -16,14 +16,83 @@ source = r'''
 #include <cassert>
 #include <iostream>
 #include <string>
+// Model the pinned HWCDC ISR: enqueue a burst, drop bytes after RX queue fills,
+// and let the application drain it later (e.g. after Wi-Fi work in loop()).
+struct BufferedUsb {
+  size_t capacity = 0;
+  bool started = false, failAllocation = false;
+  uint32_t txTimeout = 0;
+  std::string queue;
+  size_t setRxBufferSize(size_t bytes) {
+    assert(!started); // Production must configure before RX interrupts start.
+    if (failAllocation) return 0;
+    capacity = bytes;
+    return bytes;
+  }
+  void begin(unsigned long baud) {
+    assert(baud == 115200);
+    started = true;
+    if (!capacity) capacity = 256; // Arduino ESP32 2.0.17 HWCDC default.
+  }
+  void setTxTimeoutMs(uint32_t ms) { txTimeout = ms; }
+  std::string burst(const std::string &bytes) {
+    assert(started);
+    for (char c : bytes) if (queue.size() < capacity) queue.push_back(c);
+    std::string received;
+    received.swap(queue);
+    return received;
+  }
+};
 int main() {
   avolyn::FrameReceiver frames(avolyn::frameSha256);
+  BufferedUsb serial;
+  const size_t rxBytes = avolyn::beginUsbSerial(serial);
+  assert(serial.txTimeout == 10 && avolyn::usbFrameReceiveReady(rxBytes));
+  BufferedUsb legacy;
+  legacy.begin(115200);
+  const std::string maxLine(avolyn::USB_SERIAL_LINE_MAX, 'x');
+  assert(serial.burst(maxLine + "\n") == maxLine + "\n");
+  assert(legacy.burst(maxLine + "\n").size() == 256);
+  BufferedUsb failed;
+  failed.failAllocation = true;
+  const size_t failedBytes = avolyn::beginUsbSerial(failed);
+  assert(!avolyn::usbFrameReceiveReady(failedBytes));
+  JsonDocument caps, failedReply;
+  caps["cmd"] = "FRAME_CAPS";
+  caps["requestId"] = "00000000000000000000000000000001";
+  assert(avolyn::handleFrameUsb(caps, frames, 0, failedReply, failedBytes));
+  assert(failedReply["storageSupported"] == false);
+  assert(failedReply["usbReceiveReady"] == false);
+  bool reproducedLegacyDrop = false;
   std::string line;
   while (std::getline(std::cin, line)) {
     JsonDocument command, reply;
-    assert(!deserializeJson(command, line));
+    const std::string wire = line + "\n";
+    const std::string received = serial.burst(wire);
+    assert(received == wire); // Entire BEGIN and 512-byte chunks survive bursts.
+    assert(!deserializeJson(command, received));
+    const std::string oldReceived = legacy.burst(wire);
+    if (wire.size() > 256) {
+      assert(oldReceived != wire);
+      if (std::strcmp(command["cmd"] | "", "FRAME_CAPS") != 0) {
+        // A subsequent short polling command supplies a newline after a dropped
+        // layout suffix, producing the user's "Unrecognized USB command" path.
+        JsonDocument broken;
+        assert(deserializeJson(broken, oldReceived + "WIFI_STATUS\n"));
+      }
+      reproducedLegacyDrop = true;
+    } else {
+      assert(oldReceived == wire); // Small CAPS queries still worked before fix.
+    }
     const uint32_t now = command["_now"].as<uint32_t>();
-    assert(avolyn::handleFrameUsb(command, frames, now, reply));
+    if (std::strcmp(command["cmd"] | "", "FRAME_BEGIN") == 0) {
+      JsonDocument unavailable;
+      avolyn::FrameReceiver noStorage(avolyn::frameSha256);
+      assert(avolyn::handleFrameUsb(command, noStorage, now, unavailable, failedBytes));
+      assert(unavailable["error"] == "usb_transport_not_ready");
+      assert(noStorage.nextOffset() == 0 && noStorage.activePixels() == nullptr);
+    }
+    assert(avolyn::handleFrameUsb(command, frames, now, reply, rxBytes));
     if (frames.activePixels()) {
       char actual[65] = {};
       assert(avolyn::frameSha256(frames.activePixels(), avolyn::FRAME_BYTES, actual));
@@ -32,6 +101,7 @@ int main() {
     serializeJson(reply, std::cout);
     std::cout << std::endl;
   }
+  assert(reproducedLegacyDrop);
 }
 '''
 
@@ -90,6 +160,7 @@ with tempfile.TemporaryDirectory(prefix="avolyn-frame-") as folder:
         assert caps["width"] == 792 and caps["height"] == 272 and caps["stride"] == 99
         assert caps["maxFrameBytes"] == 26928 and caps["maxChunkBytes"] == 512
         assert caps["storageSupported"] is True and caps["persistent"] is False
+        assert caps["usbReceiveReady"] is True and caps["usbRxBufferBytes"] == 2048
         assert caps["minRefreshIntervalMs"] == 180000
         for example in fixture["base64Examples"]:
             assert base64.b64encode(bytes.fromhex(example["hex"])).decode() == example["base64"]
@@ -163,7 +234,7 @@ with tempfile.TemporaryDirectory(prefix="avolyn-frame-") as folder:
         upload(third, image)
         assert send("FRAME_COMMIT", transferId=third)["acceptedFrameId"] == third
         assert send("FRAME_NOT_SUPPORTED")["error"] == "unsupported_command"
-        print("Frame JSON, SHA-256, retry, atomic replacement, bounds and rollover checks passed.")
+        print("USB burst/drop regression, RX allocation failure, frame JSON, SHA-256, retry and rollover checks passed.")
     finally:
         process.stdin.close()
         return_code = process.wait(timeout=10)

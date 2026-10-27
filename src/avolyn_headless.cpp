@@ -16,11 +16,12 @@
 #include "avolyn_wifi_reconnect.h"
 
 namespace {
-  constexpr char FIRMWARE_VERSION[] = "0.2.5-dev";
+  constexpr char FIRMWARE_VERSION[] = "0.2.6-dev";
   avolyn::FrameReceiver frames(avolyn::frameSha256);
   constexpr unsigned long WIFI_POLL_MS = 250; // 4 inexpensive status checks/sec instead of ~500/sec.
   constexpr unsigned long LAN_RETRY_MS = 5000;
-  constexpr size_t SERIAL_LINE_MAX = 1024;
+  constexpr size_t SERIAL_LINE_MAX = avolyn::USB_SERIAL_LINE_MAX;
+  size_t usbRxBufferBytes = 0;
 
   Preferences wifiPrefs;
   httpd_handle_t lanServer = nullptr;
@@ -72,10 +73,11 @@ namespace {
     Serial.println();
   }
 
-  void sendError(const char *reason) {
+  void sendError(const char *reason, const char *code = nullptr) {
     JsonDocument result;
     result["type"] = "ERROR";
     result["message"] = reason;
+    if (code) result["code"] = code;
     sendJson(result);
   }
 
@@ -121,6 +123,8 @@ namespace {
     result["firmwareVersion"] = FIRMWARE_VERSION;
     result["status"] = connectionState();
     result["displayConnected"] = false;
+    result["usbRxBufferBytes"] = usbRxBufferBytes;
+    result["usbReceiveReady"] = avolyn::usbFrameReceiveReady(usbRxBufferBytes);
     result["wifiConnected"] = (WiFi.status() == WL_CONNECTED);
     result["macAddress"] = WiFi.macAddress();
     sendJson(result);
@@ -389,11 +393,11 @@ namespace {
     JsonDocument command;
     const DeserializationError error = deserializeJson(command, line);
     if (error) {
-      sendError("Unrecognized USB command.");
+      sendError("Unrecognized USB command.", "USB_JSON_INVALID");
       return;
     }
     JsonDocument frameReply;
-    if (avolyn::handleFrameUsb(command, frames, millis(), frameReply)) {
+    if (avolyn::handleFrameUsb(command, frames, millis(), frameReply, usbRxBufferBytes)) {
       sendJson(frameReply);
       return;
     }
@@ -457,7 +461,7 @@ namespace {
         avolyn::wipe(serialLine, sizeof(serialLine));
         serialLength = 0;
         discardOversizedLine = true;
-        sendError("USB command exceeded maximum length.");
+        sendError("USB command exceeded maximum length.", "USB_LINE_TOO_LONG");
       }
     }
   }
@@ -554,8 +558,7 @@ namespace {
 } // namespace
 
 void setup() {
-  Serial.begin(115200);
-  Serial.setTxTimeoutMs(10);
+  usbRxBufferBytes = avolyn::beginUsbSerial(Serial);
   // NVS below is our credential store; avoid an independent SDK flash/config path.
   WiFi.persistent(false);
   WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {

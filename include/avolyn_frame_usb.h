@@ -4,6 +4,7 @@
 #include <mbedtls/md.h>
 
 #include "avolyn_frame_receiver.h"
+#include "avolyn_usb_transport.h"
 
 namespace avolyn {
   constexpr char FRAME_PROTOCOL[] = "avolyn-frame-v1";
@@ -43,7 +44,8 @@ namespace avolyn {
            encoded == text.size() && std::memcmp(canonical, text.c_str(), encoded) == 0;
   }
 
-  inline bool handleFrameUsb(const JsonDocument &command, FrameReceiver &frames, uint32_t now, JsonDocument &reply) {
+  inline bool handleFrameUsb(const JsonDocument &command, FrameReceiver &frames, uint32_t now, JsonDocument &reply,
+                             size_t usbRxBufferBytes) {
     const char *name = command["cmd"] | "";
     if (std::strncmp(name, "FRAME_", 6) != 0) return false;
     frames.expire(now);
@@ -63,9 +65,13 @@ namespace avolyn {
       reply["pixelFormat"] = FRAME_FORMAT;
       reply["maxFrameBytes"] = FRAME_BYTES;
       reply["maxChunkBytes"] = FRAME_CHUNK_BYTES;
-      reply["storageSupported"] = true;
+      reply["storageSupported"] = usbFrameReceiveReady(usbRxBufferBytes);
+      reply["usbRxBufferBytes"] = usbRxBufferBytes;
+      reply["usbReceiveReady"] = usbFrameReceiveReady(usbRxBufferBytes);
       reply["persistent"] = false;
       reply["minRefreshIntervalMs"] = 180000;
+    } else if (std::strcmp(name, "FRAME_BEGIN") == 0 && !usbFrameReceiveReady(usbRxBufferBytes)) {
+      error = "usb_transport_not_ready";
     } else if (std::strcmp(name, "FRAME_BEGIN") == 0) {
       if (!command["width"].is<unsigned>() || command["width"].as<unsigned>() != FRAME_WIDTH ||
           !command["height"].is<unsigned>() || command["height"].as<unsigned>() != FRAME_HEIGHT ||
