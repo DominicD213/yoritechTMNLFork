@@ -1,6 +1,12 @@
-# Headless USB frame receiver (0.2.5-dev)
+# Headless USB frame receiver (0.2.6-dev)
 
 Target: XIAO ESP32-S3, Waveshare 5.79-inch 792 × 272 B/W profile. Both `avolyn_headless` and its existing `avolyn_slate_579` alias remain **headless**: neither build drives a physical panel.
+
+Version 0.2.6-dev fixes USB command loss under burst input. The pinned Arduino ESP32 2.0.17 HWCDC driver defaults to a 256-byte RX queue and drops bytes from an interrupt when that queue fills. A successful small FRAME_CAPS request therefore does not establish that a larger BEGIN or chunk will survive. See [HWCDC.cpp](https://github.com/espressif/arduino-esp32/blob/2.0.17/cores/esp32/HWCDC.cpp), `begin()` and `hw_cdc_isr_handler()`.
+
+The firmware now requests a 2,048-byte RX queue before `Serial.begin()` enables its interrupts, preserving the 1,024-byte command limit plus newline. Configuration occurs once at boot; no USB host wait is introduced. FRAME_CAPS and GET_STATUS report `usbRxBufferBytes` and `usbReceiveReady`. If the allocation fails, frame storage is not advertised and BEGIN is rejected. USB parse/line-limit errors have stable codes without echoing input.
+
+Host regression tests model a burst into the pinned driver's bounded queue: small capability queries survive at 256 bytes, larger manifests/chunks lose bytes, and the new configuration preserves complete commands including the maximum-length line. The actual JSON bridge/receiver is exercised downstream of that queue model. Allocation failure, checksum, offset, retry and rollover tests remain enabled. Hardware confirmation is still required.
 
 This milestone adds `avolyn-frame-v1` JSON commands on USB only: FRAME_CAPS, FRAME_BEGIN, FRAME_CHUNK, FRAME_COMMIT, FRAME_CANCEL and FRAME_STATUS. No LAN frame route, automatic firmware installation, reboot, NVS image storage or physical refresh is added.
 
