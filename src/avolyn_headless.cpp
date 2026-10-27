@@ -10,12 +10,14 @@
 #include <esp_http_server.h>
 #include <esp_system.h>
 
+#include "avolyn_frame_usb.h"
 #include "avolyn_pairing_crypto.h"
 #include "avolyn_wifi_credentials.h"
 #include "avolyn_wifi_reconnect.h"
 
 namespace {
-  constexpr char FIRMWARE_VERSION[] = "0.2.4-dev";
+  constexpr char FIRMWARE_VERSION[] = "0.2.5-dev";
+  avolyn::FrameReceiver frames(avolyn::frameSha256);
   constexpr unsigned long WIFI_POLL_MS = 250; // 4 inexpensive status checks/sec instead of ~500/sec.
   constexpr unsigned long LAN_RETRY_MS = 5000;
   constexpr size_t SERIAL_LINE_MAX = 1024;
@@ -390,6 +392,11 @@ namespace {
       sendError("Unrecognized USB command.");
       return;
     }
+    JsonDocument frameReply;
+    if (avolyn::handleFrameUsb(command, frames, millis(), frameReply)) {
+      sendJson(frameReply);
+      return;
+    }
     const char *name = command["cmd"] | "";
     if (strcmp(name, "PAIR_SET") == 0 || strcmp(name, "PAIR_FORGET") == 0) {
       pairUsb(command, strcmp(name, "PAIR_FORGET") == 0);
@@ -598,6 +605,7 @@ void setup() {
 void loop() {
   processUsb();
   const unsigned long now = millis();
+  frames.expire(now);
   if (uint32_t(now - lastWifiPoll) >= WIFI_POLL_MS) {
     lastWifiPoll = now;
     updateWifi(now);
