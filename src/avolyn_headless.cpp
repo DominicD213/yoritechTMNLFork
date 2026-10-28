@@ -4,20 +4,51 @@
 // Does not run stock TRMNL display, QA, setup portal, or image polling.
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
+#include <LittleFS.h>
 #include <Preferences.h>
 #include <WiFi.h>
 #include <atomic>
 #include <esp_http_server.h>
+#include <esp_partition.h>
 #include <esp_system.h>
 
 #include "avolyn_frame_usb.h"
 #include "avolyn_pairing_crypto.h"
+#include "avolyn_preset_files.h"
 #include "avolyn_wifi_credentials.h"
 #include "avolyn_wifi_reconnect.h"
 
 namespace {
-  constexpr char FIRMWARE_VERSION[] = "0.2.6-dev";
-  avolyn::FrameReceiver frames(avolyn::frameSha256);
+  constexpr char FIRMWARE_VERSION[] = "0.2.7-dev";
+  void yieldPresetIo() { delay(1); }
+  avolyn::PosixPresetFiles presetFiles("/avolynfs/avolyn", yieldPresetIo);
+  avolyn::PresetStore presetStore(presetFiles, avolyn::frameSha256);
+  const char *savePreset(void *context, const avolyn::PresetTarget &target, const char *id, const char *sha,
+                         const uint8_t *pixels) {
+    return static_cast<avolyn::PresetStore *>(context)->save(target, id, sha, pixels);
+  }
+  avolyn::FrameReceiver frames(avolyn::frameSha256, savePreset, &presetStore);
+  const char *presetBootError = "";
+  struct PresetVolume {
+    const esp_partition_t *partition =
+      esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "spiffs");
+    bool mount() {
+      return partition && partition->size >= 256 * 1024 && LittleFS.begin(false, "/avolynfs", 5, "spiffs");
+    }
+    bool erased() {
+      if (!partition || partition->size < 256 * 1024) return false;
+      uint8_t block[512];
+      for (size_t offset = 0; offset < partition->size; offset += sizeof(block)) {
+        const size_t count = partition->size - offset < sizeof(block) ? partition->size - offset : sizeof(block);
+        if (esp_partition_read(partition, offset, block, count) != ESP_OK) return false;
+        for (size_t i = 0; i < count; ++i)
+          if (block[i] != 255) return false;
+        if (offset % 4096 == 0) delay(1);
+      }
+      return true;
+    }
+    bool format() { return LittleFS.format(); }
+  };
   constexpr unsigned long WIFI_POLL_MS = 250; // 4 inexpensive status checks/sec instead of ~500/sec.
   constexpr unsigned long LAN_RETRY_MS = 5000;
   constexpr size_t SERIAL_LINE_MAX = avolyn::USB_SERIAL_LINE_MAX;
@@ -125,6 +156,9 @@ namespace {
     result["displayConnected"] = false;
     result["usbRxBufferBytes"] = usbRxBufferBytes;
     result["usbReceiveReady"] = avolyn::usbFrameReceiveReady(usbRxBufferBytes);
+    result["presetStorageReady"] = presetStore.ready();
+    result["activePresetSlot"] = frames.activeSlot();
+    result["presetBootError"] = presetBootError;
     result["wifiConnected"] = (WiFi.status() == WL_CONNECTED);
     result["macAddress"] = WiFi.macAddress();
     sendJson(result);
@@ -397,7 +431,7 @@ namespace {
       return;
     }
     JsonDocument frameReply;
-    if (avolyn::handleFrameUsb(command, frames, millis(), frameReply, usbRxBufferBytes)) {
+    if (avolyn::handleFrameUsb(command, frames, millis(), frameReply, usbRxBufferBytes, &presetStore)) {
       sendJson(frameReply);
       return;
     }
@@ -559,6 +593,12 @@ namespace {
 
 void setup() {
   usbRxBufferBytes = avolyn::beginUsbSerial(Serial);
+  PresetVolume volume;
+  if (avolyn::mountPresetVolume(volume) && presetFiles.prepare() && presetStore.initialize()) {
+    const char *error = avolyn::restoreSavedPreset(presetStore, frames);
+    if (error) presetBootError = error;
+  } else
+    presetBootError = "preset_storage_unavailable";
   // NVS below is our credential store; avoid an independent SDK flash/config path.
   WiFi.persistent(false);
   WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {

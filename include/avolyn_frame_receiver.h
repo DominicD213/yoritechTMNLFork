@@ -23,10 +23,24 @@ namespace avolyn {
     return true;
   }
 
+  struct PresetTarget {
+    unsigned slot = 0; // Zero retains the original temporary RAM-upload contract.
+    char presetId[33] = {};
+    char name[65] = {};
+  };
+  inline bool presetNameValid(const char *name) {
+    if (!name || !*name || std::strlen(name) > 64) return false;
+    for (const unsigned char *p = reinterpret_cast<const unsigned char *>(name); *p; ++p)
+      if (*p < 32 || *p == 127) return false;
+    return true;
+  }
+
   class FrameReceiver {
   public:
     using Digest = bool (*)(const uint8_t *, size_t, char *);
-    explicit FrameReceiver(Digest digest) : digest_(digest) {}
+    using Save = const char *(*)(void *, const PresetTarget &, const char *, const char *, const uint8_t *);
+    explicit FrameReceiver(Digest digest, Save save = nullptr, void *context = nullptr)
+        : digest_(digest), save_(save), context_(context) {}
     FrameReceiver(const FrameReceiver &) = delete;
     FrameReceiver &operator=(const FrameReceiver &) = delete;
 
@@ -34,17 +48,22 @@ namespace avolyn {
       if (staging_ && (uint32_t(now - touched_) >= FRAME_IDLE_MS || uint32_t(now - started_) >= FRAME_TOTAL_MS))
         discard();
     }
-    const char *begin(const char *id, const char *sha256, uint32_t now) {
+    const char *begin(const char *id, const char *sha256, uint32_t now, const PresetTarget &target = PresetTarget()) {
       expire(now);
       if (!frameHex(id, 32) || !frameHex(sha256, 64)) return "invalid_manifest";
+      if (target.slot && (target.slot > 3 || !frameHex(target.presetId, 32) || !presetNameValid(target.name)))
+        return "invalid_preset";
       if (std::strcmp(id, acceptedId_) == 0) return "already_committed";
       if (staging_) {
-        if (std::strcmp(id, stagingId_) || std::strcmp(sha256, stagingDigest_)) return "busy";
+        if (std::strcmp(id, stagingId_) || std::strcmp(sha256, stagingDigest_) || target.slot != target_.slot ||
+            std::strcmp(target.presetId, target_.presetId) || std::strcmp(target.name, target_.name))
+          return "busy";
         return nullptr; // A retry does not restart either deadline.
       }
       std::unique_ptr<uint8_t[]> next(new (std::nothrow) uint8_t[FRAME_BYTES]);
       if (!next) return "out_of_memory";
       staging_ = std::move(next);
+      target_ = target;
       std::memcpy(stagingId_, id, 33);
       std::memcpy(stagingDigest_, sha256, 65);
       received_ = 0;
@@ -82,7 +101,13 @@ namespace avolyn {
         discard();
         return "checksum_mismatch";
       }
+      if (target_.slot) {
+        if (!save_) return "preset_storage_unavailable";
+        const char *error = save_(context_, target_, stagingId_, stagingDigest_, staging_.get());
+        if (error) return error; // Keep previous RAM/flash images until a durable save succeeds.
+      }
       active_ = std::move(staging_); // Complete verified frame replaces the previous active image atomically.
+      activeSlot_ = target_.slot;
       std::memcpy(acceptedId_, stagingId_, sizeof(acceptedId_));
       std::memcpy(acceptedDigest_, stagingDigest_, sizeof(acceptedDigest_));
       discard();
@@ -99,14 +124,29 @@ namespace avolyn {
     const char *acceptedId() const { return acceptedId_; }
     const char *acceptedDigest() const { return acceptedDigest_; }
     const uint8_t *activePixels() const { return active_.get(); }
+    unsigned activeSlot() const { return activeSlot_; }
+    bool busy() const { return static_cast<bool>(staging_); }
+    const char *installActive(std::unique_ptr<uint8_t[]> pixels, const char *id, const char *sha, unsigned slot) {
+      if (busy() || !pixels || !frameHex(id, 32) || !frameHex(sha, 64) || slot < 1 || slot > 3) return "busy";
+      active_ = std::move(pixels);
+      std::memcpy(acceptedId_, id, 33);
+      std::memcpy(acceptedDigest_, sha, 65);
+      activeSlot_ = slot;
+      return nullptr;
+    }
 
   private:
     void discard() {
       staging_.reset();
       stagingId_[0] = stagingDigest_[0] = '\0';
       received_ = 0;
+      target_ = PresetTarget();
     }
     Digest digest_;
+    Save save_;
+    void *context_;
+    PresetTarget target_;
+    unsigned activeSlot_ = 0;
     std::unique_ptr<uint8_t[]> staging_, active_;
     char stagingId_[33] = {}, stagingDigest_[65] = {};
     char acceptedId_[33] = {}, acceptedDigest_[65] = {};
