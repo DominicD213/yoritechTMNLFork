@@ -37,3 +37,12 @@ Persistent COMMIT acknowledges `persistent: true`, `activePresetSlot`, pixel SHA
 `python scripts/test_preset_store.py` compiles the actual portable store, POSIX adapter, receiver and ArduinoJson bridge with address/undefined-behavior sanitizers. It covers three distinct images, restart restoration, slot switching, invalid/stale selection, unchanged-save deduplication, short write/sync/verification/rename/read faults, leftover temporary files, corruption and repair, and non-destructive mount policy. The existing frame/USB burst, Wi-Fi and cryptographic tests remain enabled. CI compiles the real XIAO target without uploading it.
 
 Hardware acceptance after approval: save three distinct presets, select each, power-cycle, confirm all names/digests and the selected slot, then interrupt a replacement while maintaining independent power. Check that Wi-Fi recovery remains responsive and that existing presets survive a failed transfer. No agent has merged or flashed these changes.
+
+
+## Viewing and deleting device presets
+
+**Your Slate → Upload layout over USB** reads the actual device catalog and shows all three slot names, empty or damaged slots, and the active slot. Use **Refresh saved presets** to read it again. **Delete → Confirm delete** removes only that saved device snapshot; the editable preset in the desktop app remains. Deleted slots can be reused. Damaged image slots can also be deleted.
+
+Deleting the active/selected preset clears that selection, including after restart. Activate another saved preset explicitly. Deletion does not clear or refresh a physical e-paper panel; display refresh is still disabled in this firmware.
+
+`PRESET_DELETE` takes `slot`, expected `frameId` and expected `sha256` from the latest catalog. It rejects stale identities and transfers in progress. It atomically publishes a catalog with the target record cleared and its pixel region replaced with white bytes, preserving the other slots. Write/sync/verification/rename failures leave the old catalog and active RAM intact. The desktop requires `deletionPersistent: true`, `deletedPresetSlot`, and a validated updated list showing an empty target slot before reporting success. On a lost acknowledgement, refresh the catalog before retrying. This is logical deletion, not a guarantee of secure flash erasure.

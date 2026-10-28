@@ -80,7 +80,8 @@ namespace avolyn {
   inline const char *restoreSavedPreset(PresetStore &store, FrameReceiver &frames) {
     if (!store.ready()) return "preset_storage_unavailable";
     unsigned selected = store.selectedSlot();
-    if (!selected || !store.slot(selected).valid) {
+    if (!selected) return nullptr; // Explicitly no selection after deleting the selected preset.
+    if (!store.slot(selected).valid) {
       selected = 0;
       for (unsigned n = 1; n <= 3; ++n)
         if (store.slot(n).valid) {
@@ -167,6 +168,23 @@ namespace avolyn {
         error = "preset_storage_unavailable";
       else
         presetList(reply, *presets);
+    } else if (std::strcmp(name, "PRESET_DELETE") == 0) {
+      if (!command["slot"].is<unsigned>())
+        error = "invalid_preset";
+      else if (!presets)
+        error = "preset_storage_unavailable";
+      else if (frames.busy())
+        error = "busy";
+      else {
+        const unsigned n = command["slot"].as<unsigned>();
+        error = presets->erase(n, frameText(command["frameId"], 32), frameText(command["sha256"], 64));
+        if (!error && frames.activeSlot() == n) frames.clearActive();
+      }
+      if (!error) {
+        reply["deletedPresetSlot"] = command["slot"];
+        reply["deletionPersistent"] = true;
+        presetList(reply, *presets);
+      }
     } else if (std::strcmp(name, "PRESET_SELECT") == 0) {
       if (!command["slot"].is<unsigned>())
         error = "invalid_preset";

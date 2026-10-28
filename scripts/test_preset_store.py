@@ -83,6 +83,9 @@ std::string stage(avolyn::FrameReceiver &f, avolyn::PresetStore &s, unsigned slo
 JsonDocument select(avolyn::FrameReceiver &f,avolyn::PresetStore &s,unsigned slot,const std::string &sha) {
   JsonDocument q; q["cmd"]="PRESET_SELECT"; q["slot"]=slot; q["sha256"]=sha; return send(f,s,q);
 }
+JsonDocument erase(avolyn::FrameReceiver &f,avolyn::PresetStore &s,unsigned slot,const char *id,const std::string &sha) {
+  JsonDocument q; q["cmd"]="PRESET_DELETE"; q["slot"]=slot; q["frameId"]=id; q["sha256"]=sha; return send(f,s,q);
+}
 std::string fileBytes(const std::string &path) {
   std::ifstream in(path,std::ios::binary); return std::string(std::istreambuf_iterator<char>(in),{});
 }
@@ -179,6 +182,43 @@ int main(int argc,char **argv) {
   avolyn::PresetTarget target; target.slot=1; std::strcpy(target.presetId,hexId(1).c_str()); std::strcpy(target.name,"Test");
   assert(std::string(invalid.save(target,hexId(900).c_str(),hash(replacement).c_str(),replacement.data()))=="preset_storage_unavailable");
   assert(fileBytes(catalog)==corrupt); writeBytes(catalog,valid);
+  // Deletion uses the same atomic catalog transaction, including failures and restarts.
+  avolyn::PresetStore deleting(io,avolyn::frameSha256); assert(deleting.initialize());
+  avolyn::FrameReceiver current(avolyn::frameSha256,save,&deleting);
+  assert(!avolyn::restoreSavedPreset(deleting,current)); assert(current.activeSlot()==1);
+  const std::string firstId=deleting.slot(1).frameId, firstSha=deleting.slot(1).sha256;
+  assert(erase(current,deleting,1,hexId(999).c_str(),firstSha)["error"]=="preset_changed");
+  for (const std::string fault : {"start","write","sync","verify","rename","read"}) {
+    const auto before=fileBytes(catalog); io.fault=fault;
+    assert(erase(current,deleting,1,firstId.c_str(),firstSha)["error"]=="preset_write_failed"); io.fault="";
+    assert(fileBytes(catalog)==before && deleting.slot(1).occupied && current.activeSlot()==1);
+  }
+  auto staged=stage(current,deleting,2,replacement,"Pending");
+  assert(erase(current,deleting,1,firstId.c_str(),firstSha)["error"]=="busy");
+  assert(command(current,deleting,"FRAME_CANCEL",staged)["ok"]==true);
+  const auto removed=erase(current,deleting,1,firstId.c_str(),firstSha);
+  assert(removed["ok"]==true && removed["deletionPersistent"]==true && removed["deletedPresetSlot"]==1);
+  assert(!deleting.slot(1).occupied && deleting.selectedSlot()==0 && !current.activePixels() && current.activeSlot()==0);
+  avolyn::PresetStore deletedBoot(io,avolyn::frameSha256); assert(deletedBoot.initialize());
+  avolyn::FrameReceiver emptyBoot(avolyn::frameSha256,save,&deletedBoot);
+  assert(!avolyn::restoreSavedPreset(deletedBoot,emptyBoot) && emptyBoot.activeSlot()==0);
+  for (unsigned n=2;n<=3;++n) { auto p=deletedBoot.load(n); assert(p && !std::memcmp(p.get(),images[n-1].data(),avolyn::FRAME_BYTES)); }
+  // A corrupt slot can be deleted using its catalog identity without loading its damaged pixels.
+  auto damagedBytes=fileBytes(catalog); damagedBytes[avolyn::PRESET_HEADER_BYTES+avolyn::FRAME_BYTES]^=1;
+  writeBytes(catalog,damagedBytes);
+  avolyn::PresetStore badImage(io,avolyn::frameSha256); assert(badImage.initialize() && !badImage.slot(2).valid);
+  const std::string badId=badImage.slot(2).frameId, badSha=badImage.slot(2).sha256;
+  assert(erase(emptyBoot,badImage,2,badId.c_str(),badSha)["ok"]==true);
+  assert(select(emptyBoot,badImage,3,hash(images[2]))["ok"]==true);
+  auto thirdId=std::string(badImage.slot(3).frameId);
+  assert(erase(emptyBoot,badImage,3,thirdId.c_str(),hash(images[2]))["ok"]==true);
+  avolyn::PresetStore allEmpty(io,avolyn::frameSha256); assert(allEmpty.initialize() && allEmpty.selectedSlot()==0);
+  for (unsigned n=1;n<=3;++n) assert(!allEmpty.slot(n).occupied);
+  assert(erase(emptyBoot,allEmpty,0,firstId.c_str(),firstSha)["ok"]==false);
+  assert(erase(emptyBoot,allEmpty,4,firstId.c_str(),firstSha)["ok"]==false);
+  avolyn::FrameReceiver reusable(avolyn::frameSha256,save,&allEmpty);
+  auto reuse=stage(reusable,allEmpty,1,replacement,"Reused slot");
+  assert(command(reusable,allEmpty,"FRAME_COMMIT",reuse)["persistent"]==true);
   std::cout << "Three-slot persistence, reboot/selection, atomic failure recovery, corruption, deduplication and USB checks passed.\n";
 }
 '''

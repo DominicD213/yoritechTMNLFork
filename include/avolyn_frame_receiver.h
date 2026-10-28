@@ -125,6 +125,11 @@ namespace avolyn {
     const char *acceptedDigest() const { return acceptedDigest_; }
     const uint8_t *activePixels() const { return active_.get(); }
     unsigned activeSlot() const { return activeSlot_; }
+    void clearActive() {
+      active_.reset();
+      activeSlot_ = 0;
+      acceptedId_[0] = acceptedDigest_[0] = '\0';
+    }
     bool busy() const { return static_cast<bool>(staging_); }
     const char *installActive(std::unique_ptr<uint8_t[]> pixels, const char *id, const char *sha, unsigned slot) {
       if (busy() || !pixels || !frameHex(id, 32) || !frameHex(sha, 64) || slot < 1 || slot > 3) return "busy";

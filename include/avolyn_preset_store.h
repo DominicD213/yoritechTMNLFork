@@ -96,6 +96,17 @@ namespace avolyn {
       if (n == selected_) return nullptr;
       return write(records_, n, 0, nullptr);
     }
+    const char *erase(unsigned n, const char *expectedFrameId, const char *expectedSha) {
+      if (!ready_) return "preset_storage_unavailable";
+      if (n < 1 || n > PRESET_SLOTS) return "invalid_preset";
+      const auto &r = records_[n - 1];
+      if (!r.occupied || !frameHex(expectedFrameId, 32) || !frameHex(expectedSha, 64) ||
+          std::strcmp(r.frameId, expectedFrameId) || std::strcmp(r.sha256, expectedSha))
+        return "preset_changed";
+      auto next = records_;
+      next[n - 1] = PresetRecord();
+      return write(next, selected_ == n ? 0 : selected_, 0, nullptr);
+    }
     std::unique_ptr<uint8_t[]> load(unsigned n) {
       if (!ready_ || n < 1 || n > 3 || !records_[n - 1].occupied || !records_[n - 1].valid) return {};
       std::unique_ptr<uint8_t[]> bytes(new (std::nothrow) uint8_t[FRAME_BYTES]);
