@@ -1,4 +1,6 @@
-# Headless USB frame receiver (0.2.6-dev)
+# Headless USB frame receiver
+
+Version 0.2.7-dev adds [three persistent preset slots](avolyn-saved-presets.md). The original temporary RAM upload described below remains supported.
 
 Target: XIAO ESP32-S3, Waveshare 5.79-inch 792 × 272 B/W profile. Both `avolyn_headless` and its existing `avolyn_slate_579` alias remain **headless**: neither build drives a physical panel.
 

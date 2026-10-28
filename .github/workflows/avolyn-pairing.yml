@@ -33,3 +33,5 @@ jobs:
           python scripts/test_wifi_credentials.py
       - name: Test bounded frame receiver and USB JSON protocol without hardware
         run: python scripts/test_frame_receiver.py
+      - name: Test three saved presets and interrupted flash writes without hardware
+        run: python scripts/test_preset_store.py
