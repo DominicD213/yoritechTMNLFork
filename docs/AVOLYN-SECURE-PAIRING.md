@@ -1,5 +1,7 @@
 # Secure wireless pairing, development protocol v1
 
+This document describes the original status-only pairing protocol. Firmware `0.2.8-dev` adds a separate authenticated preset endpoint using that USB-provisioned trust; see [secure Wi-Fi presets](avolyn-preset-lan.md). The older status protocol and its bounds remain unchanged.
+
 This PR connects the XIAO ESP32-S3 headless firmware to the Electron application with authenticated, encrypted status requests. USB is the initial trust channel. Pairing does not enable image delivery, change display wiring, publish firmware, or automatically install anything.
 
 ## User flow

@@ -15,6 +15,9 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - uses: actions/cache@v6
         with:
           path: ~/.platformio
@@ -35,3 +38,5 @@ jobs:
         run: python scripts/test_frame_receiver.py
       - name: Test three saved presets and interrupted flash writes without hardware
         run: python scripts/test_preset_store.py
+      - name: Test authenticated LAN preset commands, replay protection and storage recovery
+        run: python scripts/test_preset_lan.py

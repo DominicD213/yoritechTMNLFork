@@ -93,7 +93,7 @@ namespace avolyn {
   }
 
   inline bool handleFrameUsb(const JsonDocument &command, FrameReceiver &frames, uint32_t now, JsonDocument &reply,
-                             size_t usbRxBufferBytes, PresetStore *presets = nullptr) {
+                             size_t usbRxBufferBytes, PresetStore *presets = nullptr, bool lanTransport = false) {
     const char *name = command["cmd"] | "";
     if (std::strncmp(name, "FRAME_", 6) != 0 && std::strncmp(name, "PRESET_", 7) != 0) return false;
     frames.expire(now);
@@ -113,7 +113,7 @@ namespace avolyn {
       reply["pixelFormat"] = FRAME_FORMAT;
       reply["maxFrameBytes"] = FRAME_BYTES;
       reply["maxChunkBytes"] = FRAME_CHUNK_BYTES;
-      reply["storageSupported"] = usbFrameReceiveReady(usbRxBufferBytes);
+      reply["storageSupported"] = lanTransport || usbFrameReceiveReady(usbRxBufferBytes);
       reply["usbRxBufferBytes"] = usbRxBufferBytes;
       reply["usbReceiveReady"] = usbFrameReceiveReady(usbRxBufferBytes);
       reply["persistent"] = false;
@@ -121,7 +121,7 @@ namespace avolyn {
       reply["maxPresets"] = PRESET_SLOTS;
       reply["presetStorageReady"] = presets && presets->ready();
       reply["minRefreshIntervalMs"] = 180000;
-    } else if (std::strcmp(name, "FRAME_BEGIN") == 0 && !usbFrameReceiveReady(usbRxBufferBytes)) {
+    } else if (std::strcmp(name, "FRAME_BEGIN") == 0 && !lanTransport && !usbFrameReceiveReady(usbRxBufferBytes)) {
       error = "usb_transport_not_ready";
     } else if (std::strcmp(name, "FRAME_BEGIN") == 0) {
       PresetTarget target;
@@ -139,6 +139,18 @@ namespace avolyn {
           target.slot = command["slot"].as<unsigned>();
           std::memcpy(target.presetId, frameText(command["presetId"], 32), 33);
           std::memcpy(target.name, title.c_str(), title.size() + 1);
+        }
+      }
+      if (!error && !command["expectedSlot"].isNull()) {
+        const auto expected = command["expectedSlot"];
+        if (!target.slot || !presets || !expected["occupied"].is<bool>())
+          error = "invalid_expected_slot";
+        else {
+          const auto &actual = presets->slot(target.slot);
+          if (actual.occupied != expected["occupied"].as<bool>() ||
+              (actual.occupied && (std::strcmp(actual.frameId, frameText(expected["frameId"], 32)) ||
+                                   std::strcmp(actual.sha256, frameText(expected["sha256"], 64)))))
+            error = "preset_changed";
         }
       }
       if (!error) {
@@ -212,7 +224,8 @@ namespace avolyn {
     }
     reply["activePresetSlot"] = frames.activeSlot();
     reply["selectedPresetSlot"] = presets ? presets->selectedSlot() : 0;
-    if (!error && (std::strcmp(name, "FRAME_COMMIT") == 0 || std::strcmp(name, "PRESET_SELECT") == 0)) {
+    if (!error && (std::strcmp(name, "FRAME_COMMIT") == 0 || std::strcmp(name, "PRESET_SELECT") == 0 ||
+                   std::strcmp(name, "FRAME_STATUS") == 0)) {
       reply["persistent"] = frames.activeSlot() > 0;
       if (frames.activeSlot() && presets) reply["storedFrameId"] = presets->slot(frames.activeSlot()).frameId;
     }
