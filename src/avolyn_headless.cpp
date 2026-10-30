@@ -15,11 +15,12 @@
 #include "avolyn_frame_usb.h"
 #include "avolyn_pairing_crypto.h"
 #include "avolyn_preset_files.h"
+#include "avolyn_preset_lan.h"
 #include "avolyn_wifi_credentials.h"
 #include "avolyn_wifi_reconnect.h"
 
 namespace {
-  constexpr char FIRMWARE_VERSION[] = "0.2.7-dev";
+  constexpr char FIRMWARE_VERSION[] = "0.2.8-dev";
   void yieldPresetIo() { delay(1); }
   avolyn::PosixPresetFiles presetFiles("/avolynfs/avolyn", yieldPresetIo);
   avolyn::PresetStore presetStore(presetFiles, avolyn::frameSha256);
@@ -61,11 +62,13 @@ namespace {
   String pairedKeyId;
   String pairedSecret;
   avolyn::Challenge challenge;
+  avolyn::PresetLan presetLan;
   uint32_t lastAuthAttempt = 0;
   bool authAttempted = false;
   struct PairingGuard {
     bool locked;
-    PairingGuard() : locked(pairingMutex && xSemaphoreTake(pairingMutex, pdMS_TO_TICKS(30)) == pdTRUE) {}
+    explicit PairingGuard(uint32_t waitMs = 30)
+        : locked(pairingMutex && xSemaphoreTake(pairingMutex, pdMS_TO_TICKS(waitMs)) == pdTRUE) {}
     ~PairingGuard() {
       if (locked) xSemaphoreGive(pairingMutex);
     }
@@ -146,11 +149,17 @@ namespace {
 
 // Responds to the exact legacy commands used by Electron v0.7.0.
   void sendFirmwareStatus() {
+    PairingGuard guard;
+    if (!guard.locked) {
+      sendError("Device storage is busy. Retry.");
+      return;
+    }
     JsonDocument result;
     result["device"] = "Avolyn Slate";
     result["board"] = "xiao-esp32s3";
     result["display"] = "headless-wifi-test";
     result["pairingProtocol"] = avolyn::PROTOCOL;
+    result["presetLanProtocol"] = avolyn::PRESET_LAN_PROTOCOL;
     result["firmwareVersion"] = FIRMWARE_VERSION;
     result["status"] = connectionState();
     result["displayConnected"] = false;
@@ -195,6 +204,8 @@ namespace {
     }
     if (ok) {
       challenge.active = false;
+      presetLan.reset();
+      if (frames.busy()) frames.cancel(frames.receivingId());
       authAttempted = false;
     }
     JsonDocument result;
@@ -316,6 +327,68 @@ namespace {
     return sendLanJson(req, responseBody);
   }
 
+  esp_err_t handlePresetChallenge(httpd_req_t *req) {
+    String body;
+    {
+      PairingGuard guard;
+      if (!guard.locked) return sendLanJson(req, "{}", "503 Service Unavailable");
+      if (pairedSecret.isEmpty()) return sendLanJson(req, "{}", "401 Unauthorized");
+      if (!presetLan.challenge.valid(millis())) {
+        uint8_t random[32];
+        esp_fill_random(random, sizeof(random));
+        presetLan.challenge.issue(random, millis());
+      }
+      JsonDocument reply;
+      reply["protocol"] = avolyn::PRESET_LAN_PROTOCOL;
+      reply["challenge"] = presetLan.challenge.value;
+      serializeJson(reply, body);
+    }
+    return sendLanJson(req, body);
+  }
+
+  esp_err_t handleLanPresets(httpd_req_t *req) {
+    if (!req->content_len || req->content_len > avolyn::PRESET_LAN_WIRE)
+      return sendLanJson(req, "{}", "413 Payload Too Large");
+    char contentType[40] = {};
+    if (httpd_req_get_hdr_value_str(req, "Content-Type", contentType, sizeof(contentType)) != ESP_OK ||
+        strcmp(contentType, "application/json"))
+      return sendLanJson(req, "{}", "415 Unsupported Media Type");
+    std::unique_ptr<char[]> wire(new (std::nothrow) char[req->content_len + 1]);
+    if (!wire) return sendLanJson(req, "{}", "503 Service Unavailable");
+    size_t received = 0;
+    const uint32_t started = millis();
+    while (received < req->content_len) {
+      if (uint32_t(millis() - started) > 3000) return ESP_FAIL;
+      const int count = httpd_req_recv(req, wire.get() + received, req->content_len - received);
+      if (count <= 0) return ESP_FAIL;
+      received += count;
+    }
+    wire[received] = 0;
+    JsonDocument envelope;
+    if (deserializeJson(envelope, wire.get(), received, DeserializationOption::NestingLimit(4)))
+      return sendLanJson(req, "{}", "400 Bad Request");
+    String body;
+    int status = 503;
+    {
+      PairingGuard guard;
+      if (!guard.locked) return sendLanJson(req, "{}", "503 Service Unavailable");
+      uint8_t iv[12];
+      esp_fill_random(iv, sizeof(iv));
+      JsonDocument response;
+      const String mac = WiFi.macAddress();
+      status = presetLan.process(envelope, pairedKeyId.c_str(), pairedSecret.c_str(), mac.c_str(), frames, presetStore,
+                                 millis(), iv, response);
+      if (status == 200) serializeJson(response, body);
+    }
+    if (status != 200)
+      return sendLanJson(req, "{}",
+                         status == 401   ? "401 Unauthorized"
+                         : status == 429 ? "429 Too Many Requests"
+                         : status == 400 ? "400 Bad Request"
+                                         : "503 Service Unavailable");
+    return sendLanJson(req, body);
+  }
+
   void startLanServer() {
     if (lanServer || WiFi.status() != WL_CONNECTED || !pairingMutex) return;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -338,7 +411,17 @@ namespace {
     statusRoute.uri = "/status";
     statusRoute.method = HTTP_POST;
     statusRoute.handler = handleLanStatus;
-    if (challengeRegistered != ESP_OK || httpd_register_uri_handler(lanServer, &statusRoute) != ESP_OK) {
+    httpd_uri_t presetChallengeRoute = {};
+    presetChallengeRoute.uri = "/preset-challenge";
+    presetChallengeRoute.method = HTTP_GET;
+    presetChallengeRoute.handler = handlePresetChallenge;
+    httpd_uri_t presetRoute = {};
+    presetRoute.uri = "/presets";
+    presetRoute.method = HTTP_POST;
+    presetRoute.handler = handleLanPresets;
+    if (challengeRegistered != ESP_OK || httpd_register_uri_handler(lanServer, &statusRoute) != ESP_OK ||
+        httpd_register_uri_handler(lanServer, &presetChallengeRoute) != ESP_OK ||
+        httpd_register_uri_handler(lanServer, &presetRoute) != ESP_OK) {
       httpd_stop(lanServer);
       lanServer = nullptr;
       return;
@@ -430,12 +513,22 @@ namespace {
       sendError("Unrecognized USB command.", "USB_JSON_INVALID");
       return;
     }
-    JsonDocument frameReply;
-    if (avolyn::handleFrameUsb(command, frames, millis(), frameReply, usbRxBufferBytes, &presetStore)) {
+    const char *name = command["cmd"] | "";
+    if (!strncmp(name, "FRAME_", 6) || !strncmp(name, "PRESET_", 7)) {
+      PairingGuard guard;
+      JsonDocument frameReply;
+      if (guard.locked)
+        avolyn::handleFrameUsb(command, frames, millis(), frameReply, usbRxBufferBytes, &presetStore);
+      else {
+        frameReply["type"] = "FRAME_REPLY";
+        frameReply["cmd"] = name;
+        frameReply["requestId"] = command["requestId"];
+        frameReply["ok"] = false;
+        frameReply["error"] = "busy";
+      }
       sendJson(frameReply);
       return;
     }
-    const char *name = command["cmd"] | "";
     if (strcmp(name, "PAIR_SET") == 0 || strcmp(name, "PAIR_FORGET") == 0) {
       pairUsb(command, strcmp(name, "PAIR_FORGET") == 0);
     } else if (strcmp(name, "WIFI_SET") == 0) {
@@ -516,7 +609,10 @@ namespace {
         }
         {
           PairingGuard guard;
-          if (guard.locked) challenge.active = false;
+          if (guard.locked) {
+            challenge.active = false;
+            presetLan.reset();
+          }
         }
         lastWifiFailureAt = now;
         wifiFailures = 0;
@@ -648,7 +744,10 @@ void setup() {
 void loop() {
   processUsb();
   const unsigned long now = millis();
-  frames.expire(now);
+  {
+    PairingGuard guard(0);
+    if (guard.locked) frames.expire(millis());
+  }
   if (uint32_t(now - lastWifiPoll) >= WIFI_POLL_MS) {
     lastWifiPoll = now;
     updateWifi(now);

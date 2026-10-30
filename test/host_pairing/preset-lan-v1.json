@@ -1,0 +1,38 @@
+{
+  "secret": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "keyId": "101112131415161718191a1b1c1d1e1f",
+  "context": "303132333435363738393a3b3c3d3e3f",
+  "challenge": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+  "protocol": "avolyn-presets-lan-v1",
+  "requestPlain": {
+    "cmd": "PAIR_SET",
+    "requestId": "404142434445464748494a4b4c4d4e4f",
+    "challenge": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+  },
+  "responsePlain": {
+    "ok": false,
+    "error": "unsupported_command",
+    "cmd": "PAIR_SET",
+    "requestId": "404142434445464748494a4b4c4d4e4f",
+    "lanProtocol": "avolyn-presets-lan-v1",
+    "macAddress": "68:EE:8F:50:5B:50"
+  },
+  "requestKey": "b902089f0ae29c55510baaaf1392f0999a29fe41889634c3555dbce0a2db91ed",
+  "responseKey": "6d6c33fb714ba5b0604c8f1e474e6fea32d30695863c1c725f1ebd8d0f4f95b5",
+  "request": {
+    "v": 1,
+    "keyId": "101112131415161718191a1b1c1d1e1f",
+    "contextId": "303132333435363738393a3b3c3d3e3f",
+    "iv": "a0a1a2a3a4a5a6a7a8a9aaab",
+    "ciphertext": "2ab19fdf430937df3a352bcbbce364a1d06ece97f93bc69b55d4a809aa2902bf9abb50917c3eff7b0addd8909f8a43f8fd7fd0ca3f597398356260c41a5a29b0a3694af806db468bb4e18403c0b0a74b868e19238b2279dcaab996408769f13fa8916b4c581b4cedbbdb3964ead5ed44d8dcb0ad2ddfffb1b4f33c40e54210bb45ecf28972db9525a30a1e48722e403b",
+    "tag": "ca7024b34ffac16cde9f04842721d5c8"
+  },
+  "response": {
+    "v": 1,
+    "keyId": "101112131415161718191a1b1c1d1e1f",
+    "contextId": "303132333435363738393a3b3c3d3e3f",
+    "iv": "b0b1b2b3b4b5b6b7b8b9babb",
+    "ciphertext": "1f0bcdf3a05020f67cd614c87ff986c45b9cfeb737352903f9e10778789bfb5665275f3e8fe85a70b7b6dac8af0d0d594a5b3f07fea3f7f57d5f48c1533a8db30f440d6acd4a14296bb5ca69a33f258d40555f1feda0d64b8a94d90fd7f7e582927227f070b724575f69960d23d4fffc262d4d33648c6846b27a624fdfee303d15b2c8e4b8c5be6c03dc3f399bde2f5f5f566bc71d397399a1e412514f6a2b628cb2bbf77b0e73f473a9d747bc44437de5",
+    "tag": "06e2d770bd62a1760a4a1d721cd378cb"
+  }
+}

@@ -1,5 +1,7 @@
 # Three saved presets (0.2.7-dev)
 
+Firmware 0.2.8-dev additionally supports [secure Wi-Fi preset management](avolyn-preset-lan.md). The original USB protocol below remains supported.
+
 The XIAO ESP32-S3 can keep **three named 792 × 272 B/W layout snapshots** in flash. Saving a slot selects it. The selected valid layout is loaded into RAM at boot, including after wall-power restart without a computer. USB remains the transfer/control transport; physical screen refresh and hardware-button cycling are separate work.
 
 ## Using the feature
