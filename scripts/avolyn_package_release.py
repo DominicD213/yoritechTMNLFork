@@ -13,7 +13,7 @@ import re
 
 FLASH_CAPACITY = 8 * 1024 * 1024
 MAX_PACKAGE = 12 * 1024 * 1024
-VERSION = re.compile(r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$")
+VERSION = re.compile(r"^(?:0|[1-9][0-9]{0,5})\.(?:0|[1-9][0-9]{0,5})\.(?:0|[1-9][0-9]{0,5})(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$")
 
 
 def sha256(data):
@@ -29,6 +29,24 @@ def firmware_source_version(source):
     if not match:
         raise ValueError("Missing Avolyn firmware version in avolyn_headless.cpp.")
     return match.group(1)
+
+
+def compatibility_profile(file):
+    raw = json.loads(file.read_text(encoding="utf-8"))
+    fields = {"schemaVersion", "minimumDesktopVersion", "protocols", "presetSlots", "displayRefresh"}
+    if not isinstance(raw, dict) or set(raw) != fields or type(raw["schemaVersion"]) is not int or raw["schemaVersion"] != 1:
+        raise ValueError("Invalid firmware compatibility declaration.")
+    minimum = raw["minimumDesktopVersion"]
+    if not isinstance(minimum, str) or len(minimum) > 64 or not VERSION.fullmatch(minimum):
+        raise ValueError("Invalid minimum desktop version.")
+    protocols = raw["protocols"]
+    if not isinstance(protocols, dict) or set(protocols) != {"pairing", "frame", "presets", "presetsLan"}:
+        raise ValueError("Invalid firmware protocol declaration.")
+    if any(not isinstance(v, str) or not re.fullmatch(r"[a-z0-9-]{1,64}", v) for v in protocols.values()):
+        raise ValueError("Invalid firmware protocol identifier.")
+    if type(raw["presetSlots"]) is not int or not 0 <= raw["presetSlots"] <= 32 or type(raw["displayRefresh"]) is not bool:
+        raise ValueError("Invalid firmware feature declaration.")
+    return raw
 
 
 def parse_partitions(data):
@@ -49,7 +67,7 @@ def parse_partitions(data):
     return entries
 
 
-def build_package(build, source, version, output, boot_app0):
+def build_package(build, source, version, output, boot_app0, profile=None):
     if not VERSION.fullmatch(version) or len(version) > 64:
         raise ValueError("Invalid semantic firmware version.")
     actual = firmware_source_version(source)
@@ -68,6 +86,9 @@ def build_package(build, source, version, output, boot_app0):
     app = images[2][1].read_bytes()
     if not image_ok(boot) or not image_ok(app):
         raise ValueError("Bootloader and app must be ESP32-S3 executable images.")
+    if version.encode("utf-8") + b"\0" not in app:
+        raise ValueError("The compiled app does not contain the declared firmware version. Rebuild before packaging.")
+    compatibility = compatibility_profile(profile) if profile else None
     entries = parse_partitions(partition)
     app_part = next((p for p in entries if p[0] == 0 and p[1] in (0, 0x10)), None)
     if not app_part or app_part[2] != 0x10000 or len(app) > app_part[3]:
@@ -98,11 +119,15 @@ def build_package(build, source, version, output, boot_app0):
     package = {"schemaVersion": 1, "product": "avolyn-slate", "board": "xiao-esp32s3",
                "chip": "ESP32-S3", "version": version, "layout": "factory-s3-v1",
                "panel": panel, "notes": notes, "parts": parts}
+    if compatibility:
+        package["compatibility"] = compatibility
     package_data = json.dumps(package, separators=(",", ":")).encode("utf-8")
     if len(package_data) > MAX_PACKAGE:
         raise ValueError("The packaged firmware exceeds Avolyn's 12 MB maximum.")
     release = {key: package[key] for key in ("schemaVersion", "product", "board", "chip", "version", "panel", "notes")}
     release.update({"packageUrl": output.name, "bytes": len(package_data), "sha256": sha256(package_data)})
+    if compatibility:
+        release["compatibility"] = compatibility
     if output.exists() or Path(str(output) + ".release.json").exists():
         raise ValueError("Refusing to replace an existing package or manifest.")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -120,10 +145,11 @@ def main():
     parser.add_argument("--source", default="src/avolyn_headless.cpp", type=Path)
     parser.add_argument("--version", required=True)
     parser.add_argument("--boot-app0", type=Path)
+    parser.add_argument("--compatibility", type=Path, default=Path(__file__).resolve().parents[1] / "avolyn-release-profile.json")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     try:
-        release = build_package(args.build, args.source, args.version, args.output, args.boot_app0)
+        release = build_package(args.build, args.source, args.version, args.output, args.boot_app0, args.compatibility)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
     print(json.dumps({key: release[key] for key in ("version", "bytes", "sha256", "packageUrl")}, indent=2))

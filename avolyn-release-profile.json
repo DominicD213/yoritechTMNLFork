@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "minimumDesktopVersion": "0.7.1-dev.3",
+  "protocols": {
+    "pairing": "avolyn-pair-v1",
+    "frame": "avolyn-frame-v1",
+    "presets": "avolyn-presets-v1",
+    "presetsLan": "avolyn-presets-lan-v1"
+  },
+  "presetSlots": 3,
+  "displayRefresh": false
+}

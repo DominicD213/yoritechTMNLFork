@@ -2,12 +2,23 @@ name: publish-dev-firmware
 
 on:
   # triggered by build.yml only if the tests pass:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      publish_approved:
+        required: true
+        type: boolean
   # or triggered manually:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      publish_approved:
+        description: Confirm publishing TRMNL development firmware to the configured upstream AWS bucket
+        type: boolean
+        default: false
+        required: true
 
 jobs:
   publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_approved == true
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
