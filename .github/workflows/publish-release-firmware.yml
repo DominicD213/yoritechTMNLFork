@@ -11,6 +11,11 @@ name: publish-release-firmware
 on:
   workflow_dispatch:
     inputs:
+      publish_approved:
+        description: Confirm publishing upstream TRMNL firmware to AWS and creating TRMNL admin records (not an Avolyn release)
+        type: boolean
+        default: false
+        required: true
       tag:
         description: "Release tag to publish (e.g. v1.8.15)"
         required: true
@@ -28,19 +33,32 @@ concurrency:
   group: publish-release-firmware
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 env:
   S3_BUCKET: trmnl-fw
   S3_BASE_URL: https://trmnl-fw.s3.us-east-2.amazonaws.com
 
 jobs:
   publish:
+    if: inputs.publish_approved == true
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      REQUESTED_TAG: ${{ inputs.tag }}
 
     steps:
+      - name: Validate the release tag before checking it out
+        shell: bash
+        run: |
+          if [[ ! "$REQUESTED_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || ${#REQUESTED_TAG} -gt 64 ]]; then
+            echo "::error::Use an exact numeric release tag such as v1.8.15."
+            exit 1
+          fi
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag }}
+          ref: refs/tags/${{ inputs.tag }}
 
       - name: Verify tag matches firmware version
         run: |
@@ -48,8 +66,8 @@ jobs:
           MINOR=$(awk '/#define FW_MINOR_VERSION/ {print $3}' include/config.h)
           PATCH=$(awk '/#define FW_PATCH_VERSION/ {print $3}' include/config.h)
           VERSION="${MAJOR}.${MINOR}.${PATCH}"
-          if [[ "${{ inputs.tag }}" != "v${VERSION}" ]]; then
-            echo "::error::Tag '${{ inputs.tag }}' does not match firmware version v${VERSION} in include/config.h"
+          if [[ "$REQUESTED_TAG" != "v${VERSION}" ]]; then
+            echo "::error::The requested tag does not match the firmware version in include/config.h"
             exit 1
           fi
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"

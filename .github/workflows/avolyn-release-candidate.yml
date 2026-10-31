@@ -1,19 +1,39 @@
 name: Avolyn firmware release candidate
 
-# Ordinary PRs validate package creation without publication. A human must manually
-# request a build, and publishing always creates a DRAFT release.
+# Firmware changes produce downloadable candidates. Only a separately requested
+# manual job can create a draft release; nothing publishes a stable release.
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'lib/**'
+      - 'boards/**'
+      - 'platformio.ini'
+      - 'avolyn-release-profile.json'
+      - 'scripts/*avolyn*'
+      - '.github/workflows/avolyn-*.yml'
+      - '.github/workflows/build.yml'
+      - '.github/workflows/publish*.yml'
   pull_request:
     paths:
-      - 'scripts/avolyn_package_release.py'
-      - 'scripts/test_avolyn_release_package.py'
-      - '.github/workflows/avolyn-release-candidate.yml'
+      - 'src/**'
+      - 'include/**'
+      - 'lib/**'
+      - 'boards/**'
+      - 'platformio.ini'
+      - 'avolyn-release-profile.json'
+      - 'scripts/*avolyn*'
+      - '.github/workflows/avolyn-*.yml'
+      - '.github/workflows/build.yml'
+      - '.github/workflows/publish*.yml'
   workflow_dispatch:
     inputs:
       version:
-        description: Exact FIRMWARE_VERSION built by this ref (e.g. 0.2.0-dev)
+        description: Optional version assertion (leave empty to use the checked-out firmware version)
         type: string
-        required: true
+        required: false
       create_draft_release:
         description: Create a private-to-maintainers DRAFT GitHub Release after building (never publishes automatically)
         type: boolean
@@ -22,6 +42,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: avolyn-candidate-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   package-tests:
@@ -33,7 +57,15 @@ jobs:
         with:
           python-version: '3.13'
       - name: Test factory image packaging and OTA guards
-        run: python -m unittest discover -s scripts -p 'test_avolyn_release_package.py' -v
+        run: python -m unittest discover -s scripts -p 'test_avolyn*.py' -v
+      - name: Validate release workflow syntax and expressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --max-time 60 https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz -o "$RUNNER_TEMP/actionlint.tar.gz"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes= .github/workflows/build.yml .github/workflows/publish-firmware.yml .github/workflows/publish-dev-firmware.yml .github/workflows/publish-release-firmware.yml .github/workflows/avolyn-release-candidate.yml
 
   build-candidate:
     needs: package-tests
@@ -41,9 +73,11 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     env:
       AVOLYN_VERSION: ${{ inputs.version }}
-      DRAFT_REQUESTED: ${{ inputs.create_draft_release }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
@@ -51,34 +85,29 @@ jobs:
           python-version: '3.13'
       - uses: actions/cache@v6
         with:
-          path: ~/.platformio/.cache
+          path: ~/.platformio
           key: avolyn-release-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
       - name: Install PlatformIO
         run: python -m pip install platformio==6.1.19
       - name: Compile real XIAO ESP32-S3 headless firmware
         run: pio run -e avolyn_headless -j 4
       - name: Build checked factory package and GitHub manifest
+        id: package
         shell: bash
         run: |
           set -euo pipefail
           BOOT_DATA="$HOME/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin"
-          if [ -z "$AVOLYN_VERSION" ]; then
-            AVOLYN_VERSION="$(sed -n 's/.*FIRMWARE_VERSION\[\] = "\([^"]*\)".*/\1/p' src/avolyn_headless.cpp | head -n 1)"
-          fi
-          OUT="Avolyn-Slate-${AVOLYN_VERSION}.avolyn-firmware"
           test -f "$BOOT_DATA" || { echo "::error::Matching boot_app0.bin not found"; exit 1; }
-          mkdir -p out
-          python scripts/avolyn_package_release.py \
+          python scripts/build_avolyn_candidate.py \
             --build .pio/build/avolyn_headless \
-            --source src/avolyn_headless.cpp \
             --version "$AVOLYN_VERSION" \
             --boot-app0 "$BOOT_DATA" \
-            --output "out/$OUT"
-          sha256sum "out/$OUT" > "out/$OUT.sha256"
+            --output-dir out
       - name: Retain package, release manifest and checksum for review
+        id: upload
         uses: actions/upload-artifact@v7
         with:
-          name: avolyn-slate-firmware-candidate
+          name: avolyn-slate-firmware-candidate-${{ steps.package.outputs.version }}-attempt-${{ github.run_attempt }}
           path: out/*
           if-no-files-found: error
           retention-days: 30
@@ -90,14 +119,19 @@ jobs:
     permissions:
       contents: write
     env:
-      AVOLYN_VERSION: ${{ inputs.version }}
+      AVOLYN_VERSION: ${{ needs.build-candidate.outputs.version }}
+      CANDIDATE_ARTIFACT_ID: ${{ needs.build-candidate.outputs.artifact-id }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
+      - name: Require the validated candidate artifact
+        shell: bash
+        run: |
+          [[ "$CANDIDATE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Validated artifact ID is missing."; exit 1; }
       - name: Download already validated firmware release assets
         uses: actions/download-artifact@v8
         with:
-          name: avolyn-slate-firmware-candidate
+          artifact-ids: ${{ needs.build-candidate.outputs.artifact-id }}
           path: out
       - name: Create draft prerelease (requires maintainer approval to publish)
         shell: bash

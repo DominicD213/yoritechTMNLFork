@@ -3,6 +3,10 @@ name: publish-firmware
 on:
   workflow_call:
     inputs:
+      publish_approved:
+        description: Explicit approval from a manual workflow run
+        required: true
+        type: boolean
       include_git_hash_in_firmware_version:
         description: 'Include git hash in firmware version number (e.g. "1.2.3+15ba280")'
         required: true
@@ -14,6 +18,7 @@ on:
 
 jobs:
   publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_approved == true
     runs-on: ubuntu-latest
     timeout-minutes: 10
 

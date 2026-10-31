@@ -6,6 +6,15 @@ on:
     tags: ["**"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      upstream_publish:
+        description: Explicitly run an inherited TRMNL publishing job (not an Avolyn release)
+        type: choice
+        default: none
+        options: [none, engineering, development, tagged]
+
+permissions:
+  contents: read
 
 jobs:
   build-test:
@@ -85,22 +94,26 @@ jobs:
 
   publish-engineering-build:
     needs: build-test
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.event_name == 'workflow_dispatch' && inputs.upstream_publish == 'engineering'
     uses: ./.github/workflows/publish-firmware.yml
     with:
       include_git_hash_in_firmware_version: true
       filename_suffix_type: git_short_hash
+      publish_approved: true
 
   publish-tagged-build:
     needs: build-test
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'workflow_dispatch' && inputs.upstream_publish == 'tagged' && startsWith(github.ref, 'refs/tags/')
     uses: ./.github/workflows/publish-firmware.yml
     with:
       include_git_hash_in_firmware_version: false
       filename_suffix_type: git_tag
+      publish_approved: true
 
   publish-dev-builds:
     needs: build-test
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.event_name == 'workflow_dispatch' && inputs.upstream_publish == 'development'
     uses: ./.github/workflows/publish-dev-firmware.yml
+    with:
+      publish_approved: true
     secrets: inherit
