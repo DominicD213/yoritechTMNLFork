@@ -65,7 +65,7 @@ jobs:
           curl -fsSL --retry 3 --max-time 60 https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz -o "$RUNNER_TEMP/actionlint.tar.gz"
           echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
-          "$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes= .github/workflows/build.yml .github/workflows/publish-firmware.yml .github/workflows/publish-dev-firmware.yml .github/workflows/avolyn-release-candidate.yml
+          "$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes= .github/workflows/build.yml .github/workflows/publish-firmware.yml .github/workflows/publish-dev-firmware.yml .github/workflows/publish-release-firmware.yml .github/workflows/avolyn-release-candidate.yml
 
   build-candidate:
     needs: package-tests
@@ -75,6 +75,7 @@ jobs:
       contents: read
     outputs:
       version: ${{ steps.package.outputs.version }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     env:
       AVOLYN_VERSION: ${{ inputs.version }}
     steps:
@@ -103,9 +104,10 @@ jobs:
             --boot-app0 "$BOOT_DATA" \
             --output-dir out
       - name: Retain package, release manifest and checksum for review
+        id: upload
         uses: actions/upload-artifact@v7
         with:
-          name: avolyn-slate-firmware-candidate
+          name: avolyn-slate-firmware-candidate-${{ steps.package.outputs.version }}-attempt-${{ github.run_attempt }}
           path: out/*
           if-no-files-found: error
           retention-days: 30
@@ -118,13 +120,18 @@ jobs:
       contents: write
     env:
       AVOLYN_VERSION: ${{ needs.build-candidate.outputs.version }}
+      CANDIDATE_ARTIFACT_ID: ${{ needs.build-candidate.outputs.artifact-id }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
+      - name: Require the validated candidate artifact
+        shell: bash
+        run: |
+          [[ "$CANDIDATE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Validated artifact ID is missing."; exit 1; }
       - name: Download already validated firmware release assets
         uses: actions/download-artifact@v8
         with:
-          name: avolyn-slate-firmware-candidate
+          artifact-ids: ${{ needs.build-candidate.outputs.artifact-id }}
           path: out
       - name: Create draft prerelease (requires maintainer approval to publish)
         shell: bash

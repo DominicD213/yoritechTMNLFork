@@ -134,10 +134,23 @@ class AvolynPackageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "differs"):
             validate_source_contract(Path(__file__).resolve().parents[1], profile)
         for options in [{"commit": "not-a-sha"}, {"repository": "../outside"},
-                        {"run_id": "123\nversion=spoofed"}, {"version": "0.9.9"}]:
+                        {"run_id": "123\nversion=spoofed"}, {"version": "0.9.9"}, {"run_attempt": "0"},
+                        {"run_attempt": "2\nversion=spoofed"}]:
             with self.subTest(options=options), self.assertRaises(ValueError):
                 candidate(self.build, self.source, profile_file, self.boot, self.root / "invalid", **options)
         self.assertFalse((self.root / "invalid").exists())
+
+    def test_rerun_candidates_keep_distinct_names_and_both_downloads(self):
+        profile = Path(__file__).resolve().parents[1] / "avolyn-release-profile.json"
+        reports = [candidate(self.build, self.source, profile, self.boot, self.root / f"attempt-{attempt}",
+                             commit="a" * 40, repository="DominicD213/yoritechTMNLFork", run_id="123", run_attempt=str(attempt))
+                   for attempt in [1, 2]]
+        self.assertNotEqual(reports[0]["artifactName"], reports[1]["artifactName"])
+        self.assertEqual(reports[1]["workflowAttempt"], 2)
+        for attempt, report in enumerate(reports, 1):
+            folder = self.root / f"attempt-{attempt}"
+            self.assertTrue((folder / report["package"]["file"]).is_file())
+            self.assertEqual(json.loads((folder / "candidate-info.json").read_text()), report)
 
 
 if __name__ == "__main__":

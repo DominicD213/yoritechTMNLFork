@@ -29,7 +29,7 @@ def validate_source_contract(root, profile):
         raise ValueError("Release profile does not match the headless preset target.")
 
 
-def candidate(build, source, profile_file, boot, output_dir, version="", commit="", repository="", run_id=""):
+def candidate(build, source, profile_file, boot, output_dir, version="", commit="", repository="", run_id="", run_attempt=""):
     actual = firmware_source_version(source)
     if not VERSION.fullmatch(actual) or len(actual) > 64 or (version and version != actual):
         raise ValueError("Requested firmware version differs from the checked-out source.")
@@ -41,12 +41,16 @@ def candidate(build, source, profile_file, boot, output_dir, version="", commit=
         raise ValueError("Invalid source repository.")
     if run_id and not re.fullmatch(r"[0-9]+", run_id):
         raise ValueError("Invalid workflow run ID.")
+    if run_attempt and not re.fullmatch(r"[1-9][0-9]*", run_attempt):
+        raise ValueError("Invalid workflow run attempt.")
     output = output_dir / f"Avolyn-Slate-{actual}.avolyn-firmware"
     release = build_package(build, source, actual, output, boot, profile_file)
     manifest = Path(str(output) + ".release.json")
     report = {"schemaVersion": 1, "version": actual, "environment": "avolyn_headless",
               "sourceCommit": commit or None, "sourceRepository": repository or None,
               "workflowRun": f"https://github.com/{repository}/actions/runs/{run_id}" if repository and run_id else None,
+              "workflowAttempt": int(run_attempt) if run_attempt else None,
+              "artifactName": f"avolyn-slate-firmware-candidate-{actual}-attempt-{run_attempt}" if run_attempt else None,
               "compatibility": profile, "package": {"file": output.name, "bytes": release["bytes"], "sha256": release["sha256"]}}
     # Read back the exact files that will be retained in the artifact.
     if json.loads(manifest.read_text()) != release or sha256(output.read_bytes()) != release["sha256"]:
@@ -75,7 +79,8 @@ def main():
     args = parser.parse_args()
     try:
         report = candidate(args.build, args.source, args.profile, args.boot_app0, args.output_dir, args.version,
-                           os.environ.get("GITHUB_SHA", ""), os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GITHUB_RUN_ID", ""))
+                           os.environ.get("GITHUB_SHA", ""), os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GITHUB_RUN_ID", ""),
+                           os.environ.get("GITHUB_RUN_ATTEMPT", ""))
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
     if os.environ.get("GITHUB_OUTPUT"):
@@ -86,7 +91,7 @@ def main():
             file.write(f"## Avolyn firmware candidate {report['version']}\n\n"
                        f"Requires desktop **{report['compatibility']['minimumDesktopVersion']} or newer** with supported protocols.\n\n"
                        f"Source commit: `{report['sourceCommit']}`.\n\n"
-                       "Download **avolyn-slate-firmware-candidate** from this run's Artifacts section and extract it. "
+                       f"Download **{report['artifactName'] or 'avolyn-slate-firmware-candidate'}** from this run's Artifacts section and extract it. "
                        "Use the complete `.avolyn-firmware` file. Checksums, compatibility and source information are included.\n\n"
                        "Physical display refresh is disabled. Publication and hardware installation each require separate approval.\n")
     print(json.dumps(report, indent=2))
